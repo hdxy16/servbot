@@ -1,0 +1,15 @@
+aiogram>=3.10.0
+sqlalchemy==2.0.29
+aiosqlite==0.20.0
+python-dotenv==1.0.1
+apscheduler
+aiohttp>=3.10.5
+actualpy
+aiogram-calendar
+requests
+urllib3
+fritzconnection==1.13.2
+qrcode==7.4.2
+Pillow==10.2.0
+gspread==6.1.2
+google-auth==2.29.0

@@ -1,0 +1,12 @@
+.env
+finance.db
+__pycache__/
+*.pyc
+
+venv/
+.venv/
+*.db
+*.sqlite3
+code_dump*.txt
+google_creds.json
+*.json

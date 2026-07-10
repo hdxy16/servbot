@@ -1,0 +1,10 @@
+services:
+  finance_bot:
+    build: .
+    container_name: my_finance_bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - .:/app
+    # База даних буде зберігатися прямо в папці проєкту
