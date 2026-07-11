@@ -147,6 +147,14 @@ async def open_permission_panel(callback: types.CallbackQuery, target_id: int, s
         text=f"{'✅' if perms.get('bus') else '❌'} Автобуси",
         callback_data=f"perm_toggle_{target_id}_bus"
     )
+    kb.button(
+        text=f"{'✅' if perms.get('wifi') else '❌'} Мережа",
+        callback_data=f"perm_toggle_{target_id}_wifi"
+    )
+    kb.button(
+        text=f"{'✅' if perms.get('gym') else '❌'} Спортзал",
+        callback_data=f"perm_toggle_{target_id}_gym"
+    )
     kb.adjust(2)
     
     await callback.message.edit_text(
@@ -173,7 +181,39 @@ async def process_perm_toggle(callback: types.CallbackQuery):
             await session.commit()
             await open_permission_panel(callback, target_id, session)
 
+@router.message(F.text == "👥 Користувачі", IsApproved())
+async def users_menu_button(message: types.Message):
+    # ВИПРАВЛЕНО: та сама проблема, що й з "📅 Календар" — кнопка існувала
+    # в клавіатурі, але не була підключена до жодного обробника.
+    await cmd_users(message)
 
+
+@router.message(Command("users"), IsApproved())
+async def cmd_users(message: types.Message):
+    if message.from_user.id != ALLOWED_USER_ID: 
+        return
+        
+    async with AsyncSessionLocal() as session:
+        users = (await session.execute(select(User))).scalars().all()
+        
+        if not users:
+            return await message.answer("База користувачів порожня.")
+            
+        kb = InlineKeyboardBuilder()
+        for u in users:
+            if u.telegram_id == ALLOWED_USER_ID: 
+                continue 
+                
+            status = "✅" if u.is_approved else "⏳"
+            name = u.username or str(u.telegram_id)
+            kb.button(text=f"{status} {name}", callback_data=f"edit_user_{u.telegram_id}")
+            
+        kb.adjust(1)
+        await message.answer(
+            "👥 <b>Керування користувачами:</b>\n<i>Оберіть гостя для налаштування прав:</i>", 
+            reply_markup=kb.as_markup(), 
+            parse_mode="HTML"
+        )
 
 @router.callback_query(F.data.startswith("edit_user_"))
 async def process_edit_user(callback: types.CallbackQuery):
@@ -187,113 +227,22 @@ async def process_edit_user(callback: types.CallbackQuery):
 # ==========================================
 # 2. НАЛАШТУВАННЯ СПОВІЩЕНЬ
 # ==========================================
-async def render_settings_menu(user_id: int, message_obj: types.Message, is_edit: bool = False):
-    """Генерує єдину панель налаштувань. Для адміна додає кнопку управління юзерами."""
-    async with AsyncSessionLocal() as session:
-        user = await session.get(User, user_id)
-        kb = InlineKeyboardBuilder()
-        
-        # Кнопки сповіщень
-        kb.button(text=f"{'✅' if user.notify_finance else '❌'} Сповіщення: Фінанси", callback_data="toggle_notify_finance")
-        kb.button(text=f"{'✅' if user.notify_calendar else '❌'} Сповіщення: Календар", callback_data="toggle_notify_calendar")
-        kb.button(text=f"{'✅' if user.notify_climate else '❌'} Сповіщення: Клімат", callback_data="toggle_notify_climate")
-
-        # Тільки адмін бачить цю кнопку
-        if user_id == ALLOWED_USER_ID:
-            kb.button(text="👥 Керування користувачами", callback_data="admin_users")
-
-        kb.adjust(1)
-        text = "⚙️ <b>Панель керування:</b>\n<i>Налаштуйте сповіщення та систему.</i>"
-
-        if is_edit:
-            await message_obj.edit_text(text, reply_markup=kb.as_markup(), parse_mode="HTML")
-        else:
-            await message_obj.answer(text, reply_markup=kb.as_markup(), parse_mode="HTML")
-
 @router.message(F.text == "⚙️ Налаштування", IsApproved())
-async def process_menu_settings(message: types.Message):
-    """Обробник натискання кнопки 'Налаштування' з нижньої клавіатури"""
-    await render_settings_menu(message.from_user.id, message, is_edit=False)
+async def settings_menu_button(message: types.Message):
+    # ВИПРАВЛЕНО: та сама проблема, що й з "📅 Календар"/"👥 Користувачі" —
+    # кнопка була в клавіатурі, але ніде не підключена до обробника.
+    await cmd_settings(message)
 
-@router.callback_query(F.data == "back_to_settings", IsApproved())
-async def process_back_to_settings(callback: types.CallbackQuery):
-    """Повернення до головного меню налаштувань"""
-    await render_settings_menu(callback.from_user.id, callback.message, is_edit=True)
-    await callback.answer()
 
-@router.callback_query(F.data.startswith("toggle_notify_"), IsApproved())
-async def process_toggle_notify(callback: types.CallbackQuery):
-    """Зміна стану сповіщень та миттєве оновлення UI"""
-    param = callback.data.replace("toggle_notify_", "")
-    
+@router.message(Command("settings"), IsApproved())
+async def cmd_settings(message: types.Message):
     async with AsyncSessionLocal() as session:
-        user = await session.get(User, callback.from_user.id)
-        if param == "finance": user.notify_finance = not user.notify_finance
-        elif param == "calendar": user.notify_calendar = not user.notify_calendar
-        elif param == "climate": user.notify_climate = not user.notify_climate
-        await session.commit()
-        
-    await render_settings_menu(callback.from_user.id, callback.message, is_edit=True)
-    await callback.answer("Змінено!")
-
-@router.callback_query(F.data == "admin_users", IsApproved())
-async def process_admin_users(callback: types.CallbackQuery):
-    """Виклик меню адміністрування користувачів (заміна старій команді /users)"""
-    if callback.from_user.id != ALLOWED_USER_ID: 
-        return await callback.answer("❌ Доступ заборонено.", show_alert=True)
-        
-    async with AsyncSessionLocal() as session:
-        users = (await session.execute(select(User))).scalars().all()
-        
-        if not users:
-            return await callback.answer("База користувачів порожня.", show_alert=True)
-            
-        kb = InlineKeyboardBuilder()
-        for u in users:
-            if u.telegram_id == ALLOWED_USER_ID: 
-                continue # Адміну не треба налаштовувати права самому собі
-            status = "✅" if u.is_approved else "⏳"
-            name = u.username or str(u.telegram_id)
-            kb.button(text=f"{status} {name}", callback_data=f"edit_user_{u.telegram_id}")
-            
-        kb.adjust(1)
-        # Додаємо навігацію назад
-        kb.row(types.InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_settings"))
-        
-        await callback.message.edit_text(
-            "👥 <b>Керування користувачами:</b>\n<i>Оберіть гостя для налаштування прав:</i>", 
-            reply_markup=kb.as_markup(), 
-            parse_mode="HTML"
+        user = await session.get(User, message.from_user.id)
+        await message.answer(
+            "⚙️ <b>Налаштування сповіщень:</b>",
+            reply_markup=settings_keyboard(user.notify_finance, user.notify_calendar, user.notify_climate),
+            parse_mode="HTML",
         )
-    await callback.answer()
-
-# === Оновлюємо панель прав, щоб додати кнопку "Назад" ===
-async def open_permission_panel(callback: types.CallbackQuery, target_id: int, session):
-    """Панель видачі прав конкретному користувачу"""
-    user = await session.get(User, target_id)
-    if not user: return
-    
-    kb = InlineKeyboardBuilder()
-    perms = user.permissions
-    
-    kb.button(text=f"{'✅' if perms.get('finance') else '❌'} Фінанси", callback_data=f"perm_toggle_{target_id}_finance")
-    kb.button(text=f"{'✅' if perms.get('calendar') else '❌'} Календар", callback_data=f"perm_toggle_{target_id}_calendar")
-    kb.button(text=f"{'✅' if perms.get('ha_light') else '❌'} Світло", callback_data=f"perm_toggle_{target_id}_ha_light")
-    kb.button(text=f"{'✅' if perms.get('ha_climate') else '❌'} Клімат", callback_data=f"perm_toggle_{target_id}_ha_climate")
-    kb.button(text=f"{'✅' if perms.get('ha_alarm') else '❌'} Будильник", callback_data=f"perm_toggle_{target_id}_ha_alarm")
-    kb.button(text=f"{'✅' if perms.get('bus') else '❌'} Автобуси", callback_data=f"perm_toggle_{target_id}_bus")
-    
-    # Вирівнюємо кнопки по 2 в ряд
-    kb.adjust(2)
-    # Додаємо кнопку повернення до списку користувачів
-    kb.row(types.InlineKeyboardButton(text="🔙 Назад до списку", callback_data="admin_users"))
-    
-    await callback.message.edit_text(
-        f"⚙️ <b>Налаштування прав: @{user.username}</b> (ID: <code>{target_id}</code>)\n"
-        f"<i>Натискайте кнопки, щоб увімкнути/вимкнути доступ.</i>",
-        parse_mode="HTML",
-        reply_markup=kb.as_markup()
-    )
 
 @router.callback_query(F.data.startswith("toggle_notify_"), IsApproved())
 async def process_toggle_notify(callback: types.CallbackQuery):
@@ -714,7 +663,7 @@ async def _try_process_ha_command(message: types.Message) -> str | None:
 async def handle_text_ha_command(message: types.Message):
     if message.text.startswith("/"):
         return
-    if message.text in ["📊 Фінанси", "🎛 Розумний дім", "🚌 Автобус", "🌐 Мережа"]:
+    if message.text in ["📊 Фінанси", "🎛 Розумний дім", "🚌 Автобус", "🌐 Мережа", "📅 Календар", "⚙️ Налаштування", "👥 Користувачі", "🏋️ Спортзал"]:
         return
 
     ha_response = await _try_process_ha_command(message)

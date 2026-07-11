@@ -20,6 +20,26 @@ class EventState(StatesGroup):
     waiting_for_name = State()
 
 
+@router.message(F.text == "📅 Календар", HasPermission("calendar"))
+async def calendar_menu(message: types.Message):
+    """
+    ВИПРАВЛЕНО: сама кнопка "📅 Календар" в reply-клавіатурі раніше ніде не
+    оброблялась — тому натискання не робило нічого (текст просто йшов у
+    ignore-список загального catch-all хендлера і на цьому все закінчувалось).
+    """
+    builder = InlineKeyboardBuilder()
+    builder.button(text="➕ Додати подію", callback_data="cal_add_event")
+    builder.button(text="📋 Мої події", callback_data="cal_list_events")
+    builder.adjust(1)
+    await message.answer("📅 <b>Календар</b>", reply_markup=builder.as_markup(), parse_mode="HTML")
+
+
+@router.callback_query(F.data == "cal_add_event", HasPermission("calendar"))
+async def cal_add_event_button(callback: types.CallbackQuery):
+    await callback.message.edit_text("📅 Обери дату події:", reply_markup=await SimpleCalendar().start_calendar())
+    await callback.answer()
+
+
 @router.message(Command("add_event"), HasPermission("calendar"))
 async def cmd_add_event(message: types.Message):
     await message.answer("📅 Обери дату події:", reply_markup=await SimpleCalendar().start_calendar())
@@ -69,8 +89,7 @@ async def process_event_name(message: types.Message, state: FSMContext):
     )
 
 
-@router.message(Command("events"), HasPermission("calendar"))
-async def cmd_list_events(message: types.Message):
+async def _build_events_list(user_id: int) -> tuple[str, InlineKeyboardBuilder | None]:
     today = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
 
     async with AsyncSessionLocal() as session:
@@ -78,7 +97,7 @@ async def cmd_list_events(message: types.Message):
             select(CalendarEvent)
             .where(
                 CalendarEvent.event_date >= today,
-                CalendarEvent.user_id == message.from_user.id,
+                CalendarEvent.user_id == user_id,
                 CalendarEvent.is_archived == False,
             )
             .order_by(CalendarEvent.event_date)
@@ -87,7 +106,7 @@ async def cmd_list_events(message: types.Message):
         events = (await session.execute(stmt)).scalars().all()
 
     if not events:
-        return await message.answer("📅 На найближчий час подій не заплановано.")
+        return "📅 На найближчий час подій не заплановано.", None
 
     builder = InlineKeyboardBuilder()
     text = "📅 <b>Твій план:</b>\n\n"
@@ -110,7 +129,20 @@ async def cmd_list_events(message: types.Message):
         builder.button(text=f"❌ {e.title[:12]}...", callback_data=f"delevent_{e.id}")
 
     builder.adjust(2)
-    await message.answer(text, reply_markup=builder.as_markup(), parse_mode="HTML")
+    return text, builder
+
+
+@router.message(Command("events"), HasPermission("calendar"))
+async def cmd_list_events(message: types.Message):
+    text, builder = await _build_events_list(message.from_user.id)
+    await message.answer(text, reply_markup=builder.as_markup() if builder else None, parse_mode="HTML")
+
+
+@router.callback_query(F.data == "cal_list_events", HasPermission("calendar"))
+async def cal_list_events_button(callback: types.CallbackQuery):
+    text, builder = await _build_events_list(callback.from_user.id)
+    await callback.message.edit_text(text, reply_markup=builder.as_markup() if builder else None, parse_mode="HTML")
+    await callback.answer()
 
 
 @router.callback_query(F.data.startswith("delevent_"), HasPermission("calendar"))
