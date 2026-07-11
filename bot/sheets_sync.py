@@ -80,7 +80,20 @@ def _init_sync() -> bool:
         logger.info("Google Sheets sync успішно підключено.")
         return True
     except Exception as e:
-        _disabled_reason = f"помилка підключення: {e}"
+        detail = str(e)
+        response = getattr(e, "response", None)
+        if response is not None:
+            status = getattr(response, "status_code", "?")
+            if status == 404:
+                detail = "404 — таблицю з таким GOOGLE_SHEETS_ID не знайдено (перевір ID) або сервісний акаунт не має до неї доступу (перевір, чи розшарив таблицю на client_email)"
+            elif status == 403:
+                detail = "403 — немає прав доступу (переконайся, що таблицю розшарено на client_email з правами Editor)"
+            else:
+                try:
+                    detail = f"{status} — {response.json().get('error', {}).get('message', str(e))}"
+                except Exception:
+                    detail = f"{status} — {e}"
+        _disabled_reason = f"помилка підключення: {detail}"
         logger.error("Google Sheets sync вимкнено: %s", _disabled_reason)
         return False
 
@@ -174,4 +187,7 @@ def sync_status() -> str:
     _init_sync()
     if _sheet is not None:
         return "✅ Підключено"
-    return f"⚠️ Вимкнено ({_disabled_reason or 'не налаштовано'})"
+
+    import html
+    safe_reason = html.escape(str(_disabled_reason or "не налаштовано"))
+    return f"⚠️ Вимкнено ({safe_reason})"
