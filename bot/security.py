@@ -2,7 +2,7 @@
 import logging
 from aiogram.filters import BaseFilter
 from aiogram.types import Message, CallbackQuery
-from database.engine import AsyncSessionLocal
+from database.engine import UsersSessionLocal as AsyncSessionLocal
 from database.models import User
 from config import ALLOWED_USER_ID
 

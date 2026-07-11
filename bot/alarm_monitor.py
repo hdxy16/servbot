@@ -2,7 +2,7 @@
 import logging
 from datetime import datetime
 from aiogram import Bot
-from database.engine import AsyncSessionLocal
+from database.engine import UsersSessionLocal as AsyncSessionLocal
 from database.models import User
 from sqlalchemy import select
 from bot.home_assistant import ha_client

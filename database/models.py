@@ -1,3 +1,4 @@
+# FILE: ./database/models.py
 from datetime import datetime
 
 from sqlalchemy import (
@@ -13,15 +14,28 @@ from sqlalchemy import (
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
-class Base(DeclarativeBase):
+# ============================================================
+# ТРИ ОКРЕМІ БАЗИ — кожна відповідає за свій файл БД.
+# Так видалення одного файлу (наприклад, gym.db) не чіпає інших.
+# ============================================================
+
+class UsersBase(DeclarativeBase):
+    pass
+
+
+class CalendarBase(DeclarativeBase):
+    pass
+
+
+class GymBase(DeclarativeBase):
     pass
 
 
 # ============================================================
-# USERS
+# users.db — користувачі, ролі, права доступу
 # ============================================================
 
-class User(Base):
+class User(UsersBase):
     __tablename__ = "users"
 
     telegram_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
@@ -49,91 +63,59 @@ class User(Base):
         },
     )
 
-    # Індекс наступного дня в ротації (0=Верх А, 1=Низ А, 2=Верх Б, 3=Низ Б)
     next_workout_index: Mapped[int] = mapped_column(Integer, default=0)
 
 
 # ============================================================
-# CALENDAR / ОСОБИСТИЙ ПЛАНЕР
+# calendar.db — особистий планер
 # ============================================================
 
-class CalendarEvent(Base):
+class CalendarEvent(CalendarBase):
     __tablename__ = "calendar_events"
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, index=True, nullable=False)
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    event_date: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
 
-    user_id: Mapped[int] = mapped_column(
-        BigInteger,
-        index=True,
-        nullable=False,
-    )
+    is_notified: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
-    title: Mapped[str] = mapped_column(
-        String(255),
-        nullable=False,
-    )
-
-    event_date: Mapped[datetime] = mapped_column(
-        DateTime,
-        nullable=False,
-        index=True,
-    )
-
-    is_notified: Mapped[bool] = mapped_column(
-        Boolean,
-        default=False,
-    )
-
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime,
-        default=datetime.utcnow,
-    )
-
-    # --- ПЛАНЕР: щоденні нагадування + вечірнє підтвердження ---
-
-    # Чи включати подію у щоденний ранковий дайджест-лічильник ("за N днів")
     daily_reminder: Mapped[bool] = mapped_column(Boolean, default=True)
-
-    # Чи підтвердив користувач "я пам'ятаю" ввечері напередодні події
     confirmed: Mapped[bool] = mapped_column(Boolean, default=False)
-
-    # Скільки разів вже надсилали вечірнє підтвердження (для ескалації тону)
     reminder_stage: Mapped[int] = mapped_column(Integer, default=0)
-
-    # Час останнього надісланого вечірнього нагадування (щоб не дублювати в межах одного вікна)
     last_reminder_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-
-    # Подія вже завершилась і прибрана з активних списків
     is_archived: Mapped[bool] = mapped_column(Boolean, default=False)
 
+    # UID події в iCloud Calendar (CalDAV). NULL, якщо подія ще не
+    # синхронізована або прийшла з iCloud і локально ще не позначена.
+    icloud_uid: Mapped[str | None] = mapped_column(String, nullable=True, unique=True)
+
+    # Джерело події: "bot" (створена в Telegram) або "icloud" (імпортована з iPhone)
+    source: Mapped[str] = mapped_column(String, default="bot")
+
 
 # ============================================================
-# СПОРТЗАЛ
+# gym.db — спортзал
 # ============================================================
 
-class WorkoutSession(Base):
+class WorkoutSession(GymBase):
     __tablename__ = "workout_sessions"
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(BigInteger, index=True, nullable=False)
-
-    # "upper_a" / "lower_a" / "upper_b" / "lower_b"
     day_key: Mapped[str] = mapped_column(String, nullable=False)
-
     started_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
-class WorkoutSet(Base):
+class WorkoutSet(GymBase):
     __tablename__ = "workout_sets"
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     session_id: Mapped[int] = mapped_column(ForeignKey("workout_sessions.id"), index=True, nullable=False)
-
     exercise_key: Mapped[str] = mapped_column(String, nullable=False)
     set_number: Mapped[int] = mapped_column(Integer, nullable=False)
-
     weight_kg: Mapped[float] = mapped_column(Float, nullable=False)
     reps: Mapped[int] = mapped_column(Integer, nullable=False)
-
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

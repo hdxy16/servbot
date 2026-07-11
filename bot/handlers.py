@@ -14,7 +14,7 @@ from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
 from sqlalchemy import select, delete
 
-from database.engine import AsyncSessionLocal
+from database.engine import UsersSessionLocal as AsyncSessionLocal
 from database.models import User, CalendarEvent
 from config import ALLOWED_USER_ID
 from bot.security import HasPermission, IsApproved

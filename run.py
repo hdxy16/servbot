@@ -8,18 +8,18 @@ from sqlalchemy import select
 from datetime import datetime, timedelta
 
 from config import BOT_TOKEN, ALLOWED_USER_ID
-from database.engine import init_db, AsyncSessionLocal
+from database.engine import init_db, UsersSessionLocal, CalendarSessionLocal
 from database.models import CalendarEvent, User
 from bot.handlers import router
 from bot.handlers_calendar import router as calendar_router
 from bot.handlers_network import router as network_router
-from bot.handlers_gym import router as gym_router
 from bot.climate_monitor import check_climate_thresholds
 from bot.actual_api import get_budget_data
 from bot.home_assistant import ha_client
 from bot.alarm_monitor import check_alarm_trigger
 from bot.fritz_api import get_active_devices
 from bot.keyboards import event_confirm_keyboard
+from bot import icloud_sync
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
@@ -28,7 +28,7 @@ bot = Bot(token=BOT_TOKEN)
 KNOWN_DEVICES_MACS = set()
 
 async def init_admin():
-    async with AsyncSessionLocal() as session:
+    async with UsersSessionLocal() as session:
         stmt = select(User).where(User.telegram_id == ALLOWED_USER_ID)
         admin = (await session.execute(stmt)).scalar_one_or_none()
         if not admin:
@@ -64,7 +64,7 @@ async def scheduled_network_radar():
             if d['mac'] in new_macs:
                 alert_text += f"• <b>{d['name']}</b> (MAC: <code>{d['mac']}</code>)\n"
                 
-        async with AsyncSessionLocal() as session:
+        async with UsersSessionLocal() as session:
             stmt = select(User.telegram_id).where(User.notify_network == True, User.role == "admin")
             recipients = (await session.execute(stmt)).scalars().all()
             
@@ -75,7 +75,7 @@ async def scheduled_network_radar():
                 pass
 
 async def daily_report():
-    async with AsyncSessionLocal() as session:
+    async with UsersSessionLocal() as session:
         stmt_users = select(User.telegram_id).where(User.notify_finance == True)
         recipients = (await session.execute(stmt_users)).scalars().all()
 
@@ -104,7 +104,7 @@ async def daily_agenda_digest():
     now = datetime.utcnow()
     today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
 
-    async with AsyncSessionLocal() as session:
+    async with CalendarSessionLocal() as session:
         stmt = select(CalendarEvent).where(
             CalendarEvent.event_date >= today_start,
             CalendarEvent.daily_reminder == True,
@@ -149,7 +149,7 @@ async def evening_confirmation_check():
     tomorrow_start = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
     tomorrow_end = tomorrow_start + timedelta(days=1)
 
-    async with AsyncSessionLocal() as session:
+    async with CalendarSessionLocal() as session:
         stmt = select(CalendarEvent).where(
             CalendarEvent.event_date >= tomorrow_start,
             CalendarEvent.event_date < tomorrow_end,
@@ -190,7 +190,7 @@ async def archive_past_events():
     """Прибирає з активних списків події, які вже минули більше доби тому —
     щоб /events завжди лишався охайним, без ручного прибирання."""
     cutoff = datetime.utcnow() - timedelta(days=1)
-    async with AsyncSessionLocal() as session:
+    async with CalendarSessionLocal() as session:
         stmt = select(CalendarEvent).where(
             CalendarEvent.event_date < cutoff,
             CalendarEvent.is_archived == False,
@@ -227,12 +227,12 @@ async def main():
     scheduler.add_job(evening_confirmation_check, "cron", hour=20, minute=0)
     scheduler.add_job(evening_confirmation_check, "cron", hour=22, minute=0)
     scheduler.add_job(archive_past_events, "cron", hour=3, minute=0)
+    scheduler.add_job(icloud_pull_sync, "interval", minutes=15)
     scheduler.start()
 
     dp = Dispatcher()
     dp.include_router(calendar_router)
     dp.include_router(network_router)
-    dp.include_router(gym_router)
     dp.include_router(router)
 
     @dp.error()
@@ -262,3 +262,33 @@ if __name__ == "__main__":
         asyncio.run(main())
     except KeyboardInterrupt:
         logger.info("Роботу завершено.")
+
+
+async def icloud_pull_sync():
+    """Періодично підтягує нові події, додані прямо в застосунку Календар
+    на iPhone, і додає їх у локальну базу (з тими самими нагадуваннями)."""
+    async with CalendarSessionLocal() as session:
+        existing_uids = set(
+            (await session.execute(
+                select(CalendarEvent.icloud_uid).where(CalendarEvent.icloud_uid.isnot(None))
+            )).scalars().all()
+        )
+
+    new_events = await icloud_sync.pull_new_events(existing_uids)
+    if not new_events:
+        return
+
+    async with CalendarSessionLocal() as session:
+        for ev in new_events:
+            session.add(CalendarEvent(
+                user_id=ALLOWED_USER_ID,
+                title=ev["title"],
+                event_date=ev["event_date"],
+                icloud_uid=ev["uid"],
+                source="icloud",
+                daily_reminder=True,
+                confirmed=False,
+            ))
+        await session.commit()
+
+    logger.info("iCloud pull-sync: імпортовано %d нових подій з iPhone.", len(new_events))

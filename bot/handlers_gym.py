@@ -11,7 +11,7 @@ from aiogram.fsm.state import StatesGroup, State
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from sqlalchemy import select, func, delete
 
-from database.engine import AsyncSessionLocal
+from database.engine import GymSessionLocal as AsyncSessionLocal
 from database.models import User, WorkoutSession, WorkoutSet
 from bot.security import HasPermission
 from config import ALLOWED_USER_ID

@@ -1,5 +1,6 @@
 # FILE: ./bot/handlers_calendar.py
 from datetime import datetime, timedelta
+import asyncio
 
 from aiogram import Router, F, types
 from aiogram.filters import Command
@@ -9,9 +10,11 @@ from aiogram_calendar import SimpleCalendar, SimpleCalendarCallback
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from sqlalchemy import select, delete
 
-from database.engine import AsyncSessionLocal
+from database.engine import CalendarSessionLocal as AsyncSessionLocal
 from database.models import CalendarEvent
 from bot.security import HasPermission, IsApproved
+from bot import icloud_sync
+from config import ALLOWED_USER_ID
 
 router = Router()
 
@@ -31,7 +34,11 @@ async def calendar_menu(message: types.Message):
     builder.button(text="➕ Додати подію", callback_data="cal_add_event")
     builder.button(text="📋 Мої події", callback_data="cal_list_events")
     builder.adjust(1)
-    await message.answer("📅 <b>Календар</b>", reply_markup=builder.as_markup(), parse_mode="HTML")
+    status = icloud_sync.sync_status()
+    await message.answer(
+        f"📅 <b>Календар</b>\n<i>Синхронізація з iCloud: {status}</i>",
+        reply_markup=builder.as_markup(), parse_mode="HTML",
+    )
 
 
 @router.callback_query(F.data == "cal_add_event", HasPermission("calendar"))
@@ -77,6 +84,10 @@ async def process_event_name(message: types.Message, state: FSMContext):
         )
         session.add(new_event)
         await session.commit()
+        await session.refresh(new_event)
+        event_id = new_event.id
+
+    asyncio.create_task(_push_new_event_to_icloud(event_id, message.text, event_date))
 
     await state.clear()
 
@@ -87,6 +98,18 @@ async def process_event_name(message: types.Message, state: FSMContext):
         f"✅ Подію <b>«{message.text}»</b> на {event_date.strftime('%d.%m.%Y')} збережено.\n{days_text}",
         parse_mode="HTML",
     )
+
+
+async def _push_new_event_to_icloud(event_id: int, title: str, event_date: datetime):
+    """Фонове завдання: пуш нової події в iCloud + збереження отриманого uid."""
+    uid = await icloud_sync.push_event(title, event_date)
+    if not uid:
+        return
+    async with AsyncSessionLocal() as session:
+        event = await session.get(CalendarEvent, event_id)
+        if event:
+            event.icloud_uid = uid
+            await session.commit()
 
 
 async def _build_events_list(user_id: int) -> tuple[str, InlineKeyboardBuilder | None]:
@@ -149,8 +172,13 @@ async def cal_list_events_button(callback: types.CallbackQuery):
 async def process_del_event(callback: types.CallbackQuery):
     event_id = int(callback.data.split("_")[1])
     async with AsyncSessionLocal() as session:
+        event = await session.get(CalendarEvent, event_id)
+        icloud_uid = event.icloud_uid if event else None
         await session.execute(delete(CalendarEvent).where(CalendarEvent.id == event_id))
         await session.commit()
+
+    if icloud_uid:
+        asyncio.create_task(icloud_sync.delete_event(icloud_uid))
 
     await callback.message.edit_text(
         callback.message.html_text + "\n\n<i>Оновлено: подію скасовано.</i>",
@@ -200,3 +228,38 @@ async def process_event_snooze(callback: types.CallbackQuery):
         reply_markup=None,
     )
     await callback.answer("Нагадаю пізніше")
+
+
+# ==========================================
+# РУЧНИЙ РЕСИНК З ICLOUD (адмін)
+# ==========================================
+@router.message(Command("calendar_resync"))
+async def cmd_calendar_resync(message: types.Message):
+    if message.from_user.id != ALLOWED_USER_ID:
+        return
+
+    await message.answer("⏳ Синхронізую з iCloud...")
+
+    async with AsyncSessionLocal() as session:
+        existing_uids = set(
+            (await session.execute(select(CalendarEvent.icloud_uid).where(CalendarEvent.icloud_uid.isnot(None)))).scalars().all()
+        )
+
+    new_events = await icloud_sync.pull_new_events(existing_uids)
+    if not new_events:
+        return await message.answer("✅ Нових подій в iCloud не знайдено — все вже синхронізовано.")
+
+    async with AsyncSessionLocal() as session:
+        for ev in new_events:
+            session.add(CalendarEvent(
+                user_id=message.from_user.id,
+                title=ev["title"],
+                event_date=ev["event_date"],
+                icloud_uid=ev["uid"],
+                source="icloud",
+                daily_reminder=True,
+                confirmed=False,
+            ))
+        await session.commit()
+
+    await message.answer(f"✅ Імпортовано {len(new_events)} нових подій з iPhone.")

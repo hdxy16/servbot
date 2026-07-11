@@ -3,7 +3,7 @@ from datetime import datetime, timedelta
 from aiogram import Bot
 from config import ALLOWED_USER_ID
 from bot.home_assistant import ha_client
-from database.engine import AsyncSessionLocal
+from database.engine import UsersSessionLocal as AsyncSessionLocal
 from database.models import User
 from sqlalchemy import select
 

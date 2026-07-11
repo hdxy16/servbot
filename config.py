@@ -27,6 +27,11 @@ FRITZ_PASS = os.getenv("FRITZ_PASS")
 WIFI_MAIN_SSID = os.getenv("WIFI_MAIN_SSID")
 WIFI_MAIN_PASS = os.getenv("WIFI_MAIN_PASS")
 
-# Google Sheets синхронізація тренувань (опційно — без цих 2 змінних просто вимкнено)
+# Google Sheets синхронізація тренувань (опційно)
 GOOGLE_SHEETS_ID = os.getenv("GOOGLE_SHEETS_ID")
 GOOGLE_SHEETS_CREDS_PATH = os.getenv("GOOGLE_SHEETS_CREDS_PATH", "google_creds.json")
+
+# iCloud Calendar синхронізація (опційно)
+ICLOUD_EMAIL = os.getenv("ICLOUD_EMAIL")
+ICLOUD_APP_PASSWORD = os.getenv("ICLOUD_APP_PASSWORD")
+ICLOUD_CALENDAR_NAME = os.getenv("ICLOUD_CALENDAR_NAME", "Bot")
