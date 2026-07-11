@@ -1,10 +1,13 @@
+version: '3.8'
+
 services:
-  finance_bot:
+  bot:
     build: .
     container_name: my_finance_bot
     restart: unless-stopped
-    env_file:
-      - .env
+    ports:
+      - "8080:8080"  # <-- ПРОПИШИ ЦЕЙ РЯДОК, якщо його немає
     volumes:
       - .:/app
-    # База даних буде зберігатися прямо в папці проєкту
+    environment:
+      - PYTHONUNBUFFERED=1

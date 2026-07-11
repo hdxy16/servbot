@@ -3,7 +3,7 @@ import re
 import logging
 import asyncio
 from datetime import datetime, timedelta
-
+from bot.keyboards import admin_inline_keyboard # Не забудь додати до імпортів з bot.keyboards
 from aiogram import Router, types, F, Bot
 from aiogram.filters import CommandStart, Command
 from aiogram.fsm.context import FSMContext
@@ -13,7 +13,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
 from sqlalchemy import select, delete
-
+from bot.keyboards import admin_adguard_keyboard
 from database.engine import UsersSessionLocal as AsyncSessionLocal
 from database.models import User, CalendarEvent
 from config import ALLOWED_USER_ID
@@ -99,7 +99,13 @@ async def process_approve(callback: types.CallbackQuery, bot: Bot):
             except Exception:
                 pass
             await open_permission_panel(callback, target_id, session)
-
+async def _agh_resume_protection_task(bot: Bot, chat_id: int):
+    await asyncio.sleep(900) # 15 хвилин у секундах
+    await ha_client.toggle_device("switch", "turn_on", "switch.adguard_protection")
+    try:
+        await bot.send_message(chat_id, "🛡️ <b>AdGuard Home:</b> 15 хвилин минуло. Безпечний режим фільтрації трафіку автоматично ввімкнено назад! 🟢", parse_mode="HTML")
+    except Exception:
+        pass
 @router.callback_query(F.data.startswith("auth_deny_"))
 async def process_deny(callback: types.CallbackQuery, bot: Bot):
     if callback.from_user.id != ALLOWED_USER_ID: return
@@ -519,6 +525,61 @@ async def process_ha_light_set(callback: types.CallbackQuery):
     elif "_temp_" in data: ok = await ha_client.set_light_state(data.split("_temp_")[0], kelvin=int(data.split("_temp_")[1]))
     elif "_color_" in data: ok = await ha_client.set_light_state(data.split("_color_")[0], color_name=data.split("_color_")[1])
     await callback.answer("Застосовано" if ok else "⚠️ Помилка застосування", show_alert=not ok)
+async def _sleep_timer_task(bot: Bot, chat_id: int):
+    """Фонова неблокуюча задача для відліку 15 хвилин перед сном"""
+    await asyncio.sleep(900)  # 15 хвилин у секундах
+    lights = [
+        "light.bathroom_light_ceiling", "light.hallway_lights", 
+        "light.bedroom_light_floor", "light.livingroom_light_floor"
+    ]
+    for entity in lights:
+        await ha_client.toggle_device("light", "turn_off", entity)
+    try:
+        await bot.send_message(chat_id, "⏳ <b>Таймер сну спрацював!</b> Усе світло в квартирі автоматично вимкнено. На добраніч! 🌙", parse_mode="HTML")
+    except Exception:
+        pass
+
+@router.callback_query(F.data == "ha_light_timer_15", HasPermission("ha_light"))
+async def process_light_timer(callback: types.CallbackQuery, bot: Bot):
+    asyncio.create_task(_sleep_timer_task(bot, callback.message.chat.id))
+    await callback.answer("⏳ Таймер сну активовано! Світло вимкнеться через 15 хвилин.", show_alert=True)
+
+@router.callback_query(F.data == "ha_scene_sex", HasPermission("ha_light"))
+async def process_scene_sex(callback: types.CallbackQuery):
+    await callback.message.edit_text("🔞 Активація режиму: <b>SEX MODE</b>... 🔥")
+    # Спальня переходить у глибокий пурпурний колір на 20% яскравості, решта гаснет
+    await ha_client.set_light_state("light.bedroom_light_floor", brightness_pct=20, color_name="purple")
+    await ha_client.toggle_device("light", "turn_off", "light.livingroom_light_floor")
+    await ha_client.toggle_device("light", "turn_off", "light.hallway_lights")
+    await ha_client.toggle_device("light", "turn_off", "light.bathroom_light_ceiling")
+    await asyncio.sleep(0.5)
+    await process_ha_lights(callback)
+    await callback.answer("Атмосферу пристрасті активовано 🥂")
+
+@router.callback_query(F.data == "ha_scene_cinema_bed", HasPermission("ha_light"))
+async def process_scene_cinema_bed(callback: types.CallbackQuery):
+    await callback.message.edit_text("🎬 Активація режиму: <b>Кіно в спальні</b>...")
+    # Спальня переходить у дуже м'яке тепле світло (2200 Кельвінів) на 15% яскравості
+    await ha_client.set_light_state("light.bedroom_light_floor", brightness_pct=15, kelvin=2200)
+    await ha_client.toggle_device("light", "turn_off", "light.livingroom_light_floor")
+    await ha_client.toggle_device("light", "turn_off", "light.hallway_lights")
+    await ha_client.toggle_device("light", "turn_off", "light.bathroom_light_ceiling")
+    await asyncio.sleep(0.5)
+    await process_ha_lights(callback)
+    await callback.answer("Комфортне світло для очей налаштовано 🍿")
+
+@router.callback_query(F.data == "ha_scene_off_all", HasPermission("ha_light"))
+async def process_scene_off_all(callback: types.CallbackQuery):
+    await callback.message.edit_text("🛑 Гашу все освітлення в квартирі...")
+    lights = [
+        "light.bathroom_light_ceiling", "light.hallway_lights", 
+        "light.bedroom_light_floor", "light.livingroom_light_floor"
+    ]
+    for entity in lights:
+        await ha_client.toggle_device("light", "turn_off", entity)
+    await asyncio.sleep(0.5)
+    await process_ha_lights(callback)
+    await callback.answer("У всій квартирі темно 🌙")
 
 # ==========================================
 # 6. РОЗУМНИЙ БУДИЛЬНИК
@@ -615,6 +676,104 @@ async def process_ringing_snooze(callback: types.CallbackQuery):
     )
     await callback.answer()
 
+
+
+
+# ADMIN
+@router.callback_query(F.data == "admin_adguard", IsApproved())
+async def cal_admin_adguard(callback: types.CallbackQuery):
+    if callback.from_user.id != ALLOWED_USER_ID: return
+    
+    # Запитуємо стани сутностей AdGuard через твій клієнт HA
+    # Примітка: Перевір у себе в HA точні назви entity_id (зазвичай вони такі)
+    protection_state = await ha_client.get_entity_state("switch.adguard_protection")
+    dns_queries = await ha_client.get_entity_state("sensor.adguard_dns_queries")
+    blocked_pct = await ha_client.get_entity_state("sensor.adguard_dns_queries_blocked_percentage")
+    
+    state = protection_state.get("state", "off")
+    total_queries = dns_queries.get("state", "0")
+    pct = blocked_pct.get("state", "0")
+    
+    text = (
+        f"🛡️ <b>ЗАХИСТ МЕРЕЖІ | ADGUARD HOME</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"📊 <b>Аналітика заліза за добу (DNS):</b>\n"
+        f"  ▫️ Оброблено запитів: <b>{total_queries}</b>\n"
+        f"  ▫️ Заблоковано сміття/реклами: <b>{pct}%</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"<i>Примітка: Призупинення захисту вимкне фільтри для всіх пристроїв у Wi-Fi burmalda.</i>"
+    )
+    await callback.message.edit_text(text, reply_markup=admin_adguard_keyboard(state), parse_mode="HTML")
+    await callback.answer()
+
+@router.callback_query(F.data.startswith("agh_toggle_"), IsApproved())
+async def process_agh_toggle(callback: types.CallbackQuery):
+    if callback.from_user.id != ALLOWED_USER_ID: return
+    action = callback.data.replace("agh_toggle_", "") # turn_on або turn_off
+    
+    await ha_client.toggle_device("switch", action, "switch.adguard_protection")
+    await asyncio.sleep(0.5) # Пауза для фіксації стейту в HA
+    await cal_admin_adguard(callback)
+
+@router.callback_query(F.data == "agh_pause_15", IsApproved())
+async def process_agh_pause(callback: types.CallbackQuery, bot: Bot):
+    if callback.from_user.id != ALLOWED_USER_ID: return
+    
+    # Гасимо фільтрацію
+    await ha_client.toggle_device("switch", "turn_off", "switch.adguard_protection")
+    # Запускаємо фоновий неблокуючий таймер назад
+    asyncio.create_task(_agh_resume_protection_task(bot, callback.message.chat.id))
+    
+    await callback.answer("⏸️ Захист призупинено на 15 хвилин. Рекламу тимчасово дозволено.", show_alert=True)
+    await asyncio.sleep(0.5)
+    await cal_admin_adguard(callback)
+@router.message(F.text == "🛠️ Адмін", IsApproved())
+async def cmd_admin_menu(message: types.Message):
+    if message.from_user.id != ALLOWED_USER_ID: return
+    await message.answer("🛠️ <b>Панель адміністратора сервера:</b>", reply_markup=admin_inline_keyboard(), parse_mode="HTML")
+
+@router.callback_query(F.data == "admin_back", IsApproved())
+async def cal_admin_back(callback: types.CallbackQuery):
+    if callback.from_user.id != ALLOWED_USER_ID: return
+    await callback.message.edit_text("🛠️ <b>Панель адміністратора сервера:</b>", reply_markup=admin_inline_keyboard(), parse_mode="HTML")
+    await callback.answer()
+
+@router.callback_query(F.data == "admin_settings", IsApproved())
+async def cal_admin_settings(callback: types.CallbackQuery):
+    if callback.from_user.id != ALLOWED_USER_ID: return
+    async with AsyncSessionLocal() as session:
+        user = await session.get(User, callback.from_user.id)
+        await callback.message.edit_text(
+            "⚙️ <b>Налаштування сповіщень:</b>",
+            reply_markup=settings_keyboard(user.notify_finance, user.notify_calendar, user.notify_climate),
+            parse_mode="HTML",
+        )
+    await callback.answer()
+
+@router.callback_query(F.data == "admin_users", IsApproved())
+async def cal_admin_users(callback: types.CallbackQuery):
+    if callback.from_user.id != ALLOWED_USER_ID: return
+    async with AsyncSessionLocal() as session:
+        users = (await session.execute(select(User))).scalars().all()
+        if not users:
+            return await callback.answer("База користувачів порожня.", show_alert=True)
+            
+        kb = InlineKeyboardBuilder()
+        for u in users:
+            if u.telegram_id == ALLOWED_USER_ID: continue 
+            status = "✅" if u.is_approved else "⏳"
+            name = u.username or str(u.telegram_id)
+            kb.button(text=f"{status} {name}", callback_data=f"edit_user_{u.telegram_id}")
+            
+        kb.button(text="🔙 Назад до Адмін", callback_data="admin_back", style=ButtonStyle.PRIMARY)
+        kb.adjust(1)
+        
+        await callback.message.edit_text(
+            "👥 <b>Керування користувачами:</b>\n<i>Оберіть гостя для налаштування права доступів:</i>", 
+            reply_markup=kb.as_markup(), 
+            parse_mode="HTML"
+        )
+    await callback.answer()
 # ==========================================
 # 7. АВТОБУС
 # ==========================================
@@ -656,16 +815,19 @@ async def _try_process_ha_command(message: types.Message) -> str | None:
     return await ha_client.execute_command(command)
 
 
-# ВИПРАВЛЕНО: раніше цей catch-all відправляв будь-який текст в ollama/AI-пам'ять
-# (видалену повністю). Залишено тільки регекс-розпізнавання текстових команд
-# для Home Assistant (не є ШІ — просте keyword-парсення в home_assistant.py).
+# У файлі bot/handlers.py змінити фільтр на самому дні:
 @router.message(F.text, IsApproved())
-async def handle_text_ha_command(message: types.Message):
-    if message.text.startswith("/"):
+async def catch_unhandled_text(message: types.Message):
+    if re.match(r"^(\d+[.,]?\d*)(?:#(.*))?$", message.text):
         return
-    if message.text in ["📊 Фінанси", "🎛 Розумний дім", "🚌 Автобус", "🌐 Мережа", "📅 Календар", "⚙️ Налаштування", "👥 Користувачі", "🏋️ Спортзал"]:
+        
+    # Додали "🛠️ Адмін" та очистили решту відступів
+    if message.text in ["📊 Фінанси", "🎛 Розумний дім", "🚌 Автобус", "🌐 Мережа", "📅 Календар", "⚙️ Налаштування", "👥 Користувачі", "🏋️ Спортзал", "🍏 Трекер їжі", "🖥️ Сервер", "🛠️ Адмін"]:
         return
 
-    ha_response = await _try_process_ha_command(message)
-    if ha_response:
-        await message.answer(ha_response, parse_mode="HTML")
+    await message.answer(
+        "🛑 <b>Я працюю виключно через інтерфейс кнопок!</b>\n\n"
+        "Будь ласка, використовуйте клавіатуру нижче або інлайн-меню для навігації.",
+        reply_markup=main_reply_keyboard(message.from_user.id == ALLOWED_USER_ID),
+        parse_mode="HTML"
+    )

@@ -1,29 +1,6 @@
 # FILE: ./bot/icloud_sync.py
 """
 Двостороння синхронізація календаря бота з Apple iCloud Calendar (CalDAV).
-
-Навіщо: якщо calendar.db на сервері раптом загубиться (видалив вручну,
-переїзд на новий сервер) — усі події, що бот вже встиг запушити в iCloud,
-підтягнуться назад автоматично при наступному циклі синхронізації.
-Плюс: події, додані прямо в застосунку "Календар" на iPhone, теж
-потраплять в бота і отримають ті самі щоденні нагадування й вечірнє
-підтвердження, що й події, створені через Telegram.
-
-НАЛАШТУВАННЯ (одноразово):
-1. Зайди на appleid.apple.com → увійди → "Пароль і безпека" →
-   "Паролі для застосунків" → Створити пароль для застосунку.
-   (Це НЕ твій звичайний Apple ID пароль — CalDAV з ним не працює,
-   потрібен саме окремий App-Specific Password.)
-2. У застосунку "Календар" на iPhone/Mac створи ОКРЕМИЙ календар,
-   наприклад "Bot" (не використовуй основний "Home"/"Особисте" — так
-   синхронізація буде ізольована і ти зможеш окремо вимкнути видимість
-   цього календаря, якщо набридне).
-3. В .env додай:
-   ICLOUD_EMAIL=твоя_пошта@icloud.com
-   ICLOUD_APP_PASSWORD=xxxx-xxxx-xxxx-xxxx   (той самий з кроку 1)
-   ICLOUD_CALENDAR_NAME=Bot                   (назва з кроку 2)
-
-Без цих змінних модуль просто вимикається — бот працює як раніше.
 """
 
 import asyncio
@@ -124,7 +101,7 @@ def _delete_event_sync(icloud_uid: str):
         event = cal.event_by_uid(icloud_uid)
         event.delete()
     except Exception:
-        pass  # вже видалено чи не знайдено — нічого страшного
+        pass  # вже видалено чи не знайдено
 
 
 async def push_event(title: str, event_date: datetime) -> str | None:
@@ -193,3 +170,49 @@ def sync_status() -> str:
     if _calendar is not None:
         return "✅ Підключено"
     return f"⚠️ Вимкнено ({html.escape(str(_disabled_reason or 'не налаштовано'))})"
+
+
+# ==========================================
+# ФОНОВА ЗАДАЧА ДЛЯ ПЛАНУВАЛЬНИКА (APSched)
+# ==========================================
+async def icloud_pull_sync():
+    """
+    Автоматична інтервальна задача, яка викликається з run.py.
+    Забирає нові події з iCloud та реєструє їх у локальній базі.
+    """
+    if not _sync_ready():
+        return
+
+    from database.engine import CalendarSessionLocal
+    from database.models import CalendarEvent
+    from sqlalchemy import select
+    from config import ALLOWED_USER_ID
+
+    try:
+        # 1. Отримуємо унікальні UID подій, які вже є в базі, щоб уникнути дублів
+        async with CalendarSessionLocal() as session:
+            stmt = select(CalendarEvent.icloud_uid).where(CalendarEvent.icloud_uid.isnot(None))
+            existing_uids = set((await session.execute(stmt)).scalars().all())
+
+        # 2. Стягуємо нові події з iCloud
+        new_events = await pull_new_events(existing_uids)
+        if not new_events:
+            return
+
+        # 3. Записуємо нові події в локальну базу даних календаря
+        async with CalendarSessionLocal() as session:
+            for ev in new_events:
+                session.add(CalendarEvent(
+                    user_id=ALLOWED_USER_ID,
+                    title=ev["title"],
+                    event_date=ev["event_date"],
+                    icloud_uid=ev["uid"],
+                    source="icloud",
+                    daily_reminder=True,
+                    confirmed=False,
+                ))
+            await session.commit()
+            
+        logger.info(f"🔄 Фонова синхронізація: успішно імпортовано {len(new_events)} подій з iCloud.")
+    except Exception as e:
+        logger.error(f"Помилка виконання автоматичного пулу iCloud: {e}")

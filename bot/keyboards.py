@@ -61,6 +61,7 @@ def settings_keyboard(notify_finance: bool, notify_calendar: bool, notify_climat
     builder.button(text=fin_text, callback_data="toggle_notify_finance", style=_toggle_style(notify_finance))
     builder.button(text=cal_text, callback_data="toggle_notify_calendar", style=_toggle_style(notify_calendar))
     builder.button(text=clim_text, callback_data="toggle_notify_climate", style=_toggle_style(notify_climate))
+    builder.button(text="🔙 Назад до Адмін", callback_data="admin_back", style=ButtonStyle.PRIMARY) # Перенаправлення
     builder.adjust(1)
     return builder.as_markup()
 
@@ -72,25 +73,41 @@ def ha_main_keyboard() -> InlineKeyboardMarkup:
     builder.adjust(1)
     return builder.as_markup()
 
+# FILE: ./bot/keyboards.py
+
 def ha_lights_keyboard(states: dict) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
-    def add_light_row(name, entity_id):
-        state = states.get(entity_id, "unknown")
-        if state == "on": emoji = "🟢 🌕"
-        elif state == "off": emoji = "🔴 🌑"
-        else: emoji = "⚪️ ❓"
-            
-        builder.button(text=f"{emoji} {name}", callback_data=f"ha_toggle_{entity_id}", style=_ha_toggle_style(state))
-        builder.button(text="⚙️ Налашт.", callback_data=f"ha_opts_{entity_id}", style=ButtonStyle.PRIMARY)
-
-    add_light_row("Ванна", "light.bathroom_light_ceiling")
-    add_light_row("Коридор", "light.hallway_lights")
-    add_light_row("Спальня", "light.bedroom_light_floor")
-    add_light_row("Вітальня", "light.livingroom_light_floor")
     
-    builder.button(text="🔄 Оновити статуси", callback_data="ha_lights", style=ButtonStyle.SUCCESS)
-    builder.button(text="🔙 Назад", callback_data="ha_main_menu", style=ButtonStyle.DANGER)
-    builder.adjust(2, 2, 2, 2, 2)
+    # 1. ПАРНА СІТКА КЕРУВАННЯ (Кнопка стану + Кнопка тонкого регулювання)
+    rooms = [
+        ("Ванна", "light.bathroom_light_ceiling"),
+        ("Коридор", "light.hallway_lights"),
+        ("Спальня", "light.bedroom_light_floor"),
+        ("Вітальня", "light.livingroom_light_floor")
+    ]
+    
+    for name, entity_id in rooms:
+        state = states.get(entity_id, "off")
+        emoji = "💡 🟢" if state == "on" else "⚫"
+        # Ліва кнопка — швидкий тумблер ON/OFF
+        builder.button(text=f"{emoji} {name}", callback_data=f"ha_toggle_{entity_id}", style=_ha_toggle_style(state))
+        # Права кнопка — перехід до налаштувань яскравості/кольору
+        builder.button(text="⚙️ Налаштувати", callback_data=f"ha_opts_{entity_id}", style=ButtonStyle.PRIMARY)
+
+    # 2. НОВІ АТМОСФЕРНІ СЦЕНІ
+    builder.button(text="🔞 SEX MODE (Спальня приглушене пурпурне 20%)", callback_data="ha_scene_sex", style=ButtonStyle.PRIMARY)
+    builder.button(text="🎬 Режим кіно (Спальня комфортне тепле 15%)", callback_data="ha_scene_cinema_bed", style=ButtonStyle.PRIMARY)
+    
+    # ПОКРАЩЕННЯ: Автоматичний таймер сну для всієї квартири
+    builder.button(text="⏳ Запустити таймер сну (Вимкнути все через 15 хв)", callback_data="ha_light_timer_15", style=ButtonStyle.PRIMARY)
+    
+    # 3. СИСТЕМНІ КНОПКИ
+    builder.button(text="🛑 ВИМКНУТИ ВСЕ СВІТЛО", callback_data="ha_scene_off_all", style=ButtonStyle.DANGER)
+    builder.button(text="🔄 Оновити статуси", callback_data="ha_lights", style=ButtonStyle.PRIMARY)
+    builder.button(text="🔙 Назад до меню", callback_data="ha_main_menu", style=ButtonStyle.PRIMARY)
+    
+    # Структура сітки: 4 рядки по 2 кнопки кімнат, сцени по одній, системні внизу
+    builder.adjust(2, 2, 2, 2, 1, 1, 1, 1, 2)
     return builder.as_markup()
 
 def ha_light_options_keyboard(entity_id: str) -> InlineKeyboardMarkup:
@@ -146,27 +163,52 @@ def alarm_ringing_keyboard() -> InlineKeyboardMarkup:
     builder.button(text="💤 +10 хв", callback_data="ringing_snooze_10", style=ButtonStyle.SUCCESS)
     builder.adjust(1, 2)
     return builder.as_markup()
-
 def wifi_main_keyboard() -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     builder.button(text="🛜 QR для гостей (Main Wi-Fi)", callback_data="wifi_qr", style=ButtonStyle.PRIMARY)
     builder.button(text="📊 Fritz: Статистика", callback_data="wifi_stats", style=ButtonStyle.PRIMARY)
     builder.button(text="📱 Fritz: Пристрої", callback_data="wifi_devices", style=ButtonStyle.PRIMARY)
     builder.button(text="🔄 Ребут Fritz!Box", callback_data="wifi_reboot", style=ButtonStyle.DANGER)
-    builder.adjust(1, 2, 1)
+    builder.button(text="🔙 Назад до Адмін", callback_data="admin_back", style=ButtonStyle.PRIMARY) # Перенаправлення
+    builder.adjust(1, 2, 1, 1)
     return builder.as_markup()
-
+def admin_inline_keyboard() -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.button(text="🌐 Мережа (Fritz!Box)", callback_data="wifi_main_menu")
+    builder.button(text="🛡️ Захист AdGuard Home", callback_data="admin_adguard") # Нова кнопка
+    builder.button(text="⚙️ Сповіщення", callback_data="admin_settings")
+    builder.button(text="🖥️ Телеметрія PVE (Сервер)", callback_data="sys_refresh")
+    builder.button(text="👥 Права користувачів", callback_data="admin_users")
+    builder.adjust(2, 1, 2) # Рівне, красиве розташування кнопок
+    return builder.as_markup()
+def admin_adguard_keyboard(filtering_state: str) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    
+    status_emoji = "🟢 Активний" if filtering_state == "on" else "🔴 Вимкнений"
+    action = "turn_off" if filtering_state == "on" else "turn_on"
+    
+    # Головний тумблер ON/OFF
+    builder.button(text=f"Захист: {status_emoji}", callback_data=f"agh_toggle_{action}", style=_ha_toggle_style(filtering_state))
+    
+    # Кнопка швидкої паузи (показується тільки якщо захист зараз увімкнено)
+    if filtering_state == "on":
+        builder.button(text="⏸️ Призупинити захист на 15 хв", callback_data="agh_pause_15", style=ButtonStyle.PRIMARY)
+        
+    builder.button(text="🔄 Оновити статус", callback_data="admin_adguard", style=ButtonStyle.SUCCESS)
+    builder.button(text="🔙 Назад до Адмін", callback_data="admin_back", style=ButtonStyle.DANGER)
+    builder.adjust(1)
+    return builder.as_markup()
+# У файлі bot/keyboards.py змінити функцію:
 def main_reply_keyboard(is_admin: bool = False) -> ReplyKeyboardMarkup:
     kb = [
         [KeyboardButton(text="📊 Фінанси"), KeyboardButton(text="🎛 Розумний дім")],
-        [KeyboardButton(text="🚌 Автобус"), KeyboardButton(text="🌐 Мережа")],
-        [KeyboardButton(text="📅 Календар"), KeyboardButton(text="⚙️ Налаштування")],
-        [KeyboardButton(text="🏋️ Спортзал")],
+        [KeyboardButton(text="🚌 Автобус"), KeyboardButton(text="📅 Календар")],
+        [KeyboardButton(text="🏋️ Спортзал"), KeyboardButton(text="🍏 Трекер їжі")],
     ]
     if is_admin:
-        kb.append([KeyboardButton(text="👥 Користувачі")])
+        # Всі інші адмінські кнопки прибрані звідси і сховані під цю кнопку
+        kb.append([KeyboardButton(text="🛠️ Адмін")])
     return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True, is_persistent=True)
-
 
 def event_confirm_keyboard(event_id: int) -> InlineKeyboardMarkup:
     """Кнопки для вечірнього підтвердження 'я пам'ятаю про завтрашню подію'."""
@@ -184,3 +226,31 @@ def calendar_menu_keyboard() -> InlineKeyboardMarkup:
     builder.button(text="📋 Мої події", callback_data="cal_list")
     builder.adjust(1)
     return builder.as_markup()
+
+def pve_main_keyboard(resources: list) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    for item in resources:
+        vmid = item.get("vmid")
+        name = item.get("name", "Unknown")
+        status = item.get("status", "stopped")
+        gtype = item.get("type", "lxc").upper()
+        mark = "🟢" if status == "running" else "🔴"
+        builder.button(
+            text=f"{mark} [{gtype}] {name} (ID: {vmid})",
+            callback_data=f"sys_view_{item.get('type')}_{vmid}"
+        )
+    builder.adjust(1)
+    builder.button(text="🔄 Оновити дані", callback_data="sys_refresh", style=ButtonStyle.SUCCESS)
+    builder.button(text="🔙 Назад до Адмін", callback_data="admin_back", style=ButtonStyle.DANGER) # Змінено з ha_main_menu
+    builder.adjust(1)
+    return builder.as_markup()
+
+def pve_guest_control_keyboard(vmid: int, gtype: str) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.button(text="▶️ Запустити (Start)", callback_data=f"sys_act_{gtype}_{vmid}_start", style=ButtonStyle.SUCCESS)
+    builder.button(text="🔄 Перезавантажити", callback_data=f"sys_act_{gtype}_{vmid}_reboot", style=ButtonStyle.PRIMARY)
+    builder.button(text="🛑 Зупинити (Shutdown)", callback_data=f"sys_act_{gtype}_{vmid}_shutdown", style=ButtonStyle.DANGER)
+    builder.button(text="⚡ Вбити процес (Stop)", callback_data=f"sys_act_{gtype}_{vmid}_stop", style=ButtonStyle.DANGER)
+    builder.button(text="🔙 До списку вузлів", callback_data="sys_refresh", style=ButtonStyle.PRIMARY)
+    builder.adjust(2, 2, 1)
+    return builder.as_markup()    
