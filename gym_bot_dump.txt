@@ -1,4 +1,4 @@
-# Дамп структури та коду проєкту Gym_Bot від 2026-07-12 12:33:33
+# Дамп структури та коду проєкту Gym_Bot від 2026-07-12 13:38:32
 ============================================================
 
 ## 📂 СТРУКТУРА ПРОЄКТУ GYM_BOT:
@@ -20,7 +20,7 @@
 ```env
 # Gym_Bot/.env
 BOT_TOKEN=8905502116:AAGiRuEDObHnMwFMZeih63Onr19Z3XKBsX4
-ADMIN_IDS=700105062
+ADMIN_IDS=700105062,372135672
 DATABASE_URL=sqlite+aiocampbell:////app/Gym_Bot/gym_coach.db
 ```
 
@@ -43,9 +43,10 @@ load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_IDS = [int(uid.strip()) for uid in os.getenv("ADMIN_IDS", "").split(",") if uid.strip()]
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite+aiogram:////app/Gym_Bot/gym_coach.db").replace("aiocampbell", "aiosqlite")
 
-# Еталонний каталог за замовчуванням (база даних заповниться суворо звідси)
+raw_db_url = os.getenv("DATABASE_URL", "sqlite+aiosqlite:////app/Gym_Bot/gym_coach.db")
+DATABASE_URL = raw_db_url.replace("aiocampbell", "aiosqlite").replace("aiogram", "aiosqlite")
+
 FOOD_CATALOG = {
     "protein": {
         "title": "🥩 Білки",
@@ -94,7 +95,7 @@ FOOD_CATALOG = {
             "Перловка": {"size": 50.0, "unit": "г"},
             "Ячна крупа": {"size": 50.0, "unit": "г"},
             "Пшоняна крупа": {"size": 50.0, "unit": "г"},
-            "Вівсяні пластівце": {"size": 50.0, "unit": "г"},
+            "Вівсяні пластівці": {"size": 50.0, "unit": "г"},
             "Кукурудзяна крупа": {"size": 55.0, "unit": "г"},
             "Манка": {"size": 50.0, "unit": "г"},
             "Кіноа": {"size": 50.0, "unit": "г"},
@@ -123,7 +124,7 @@ FOOD_CATALOG = {
             "Лляна олія": {"size": 15.0, "unit": "г"},
             "Кокосова олія": {"size": 15.0, "unit": "г"},
             "Авокадова олія": {"size": 15.0, "unit": "г"},
-            "Авокадо": {"size": 80.0, "unit": "г"},
+            "Aвокадо": {"size": 80.0, "unit": "г"},
             "Маслини": {"size": 50.0, "unit": "г"},
             "Оливки": {"size": 50.0, "unit": "г"},
             "Майонез": {"size": 20.0, "unit": "г"},
@@ -155,6 +156,13 @@ FOOD_CATALOG = {
             "Хурма": {"size": 200.0, "unit": "г"},
             "Виноград": {"size": 180.0, "unit": "г"}
         }
+    },
+    "anything": {
+        "title": "🍩 Будь-що",
+        "items": {
+            "Снеки, чіпси, солодощі, соуси": {"size": 50.0, "unit": "г"},
+            "Солодкий напій": {"size": 500.0, "unit": "мл"}
+        }
     }
 }
 ```
@@ -168,10 +176,19 @@ import datetime
 from sqlalchemy import select, ForeignKey, String, Integer, Float, Boolean, DateTime
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+from sqlalchemy import event  # <-- ДОДАНО
 
 from config import DATABASE_URL
 
 engine = create_async_engine(DATABASE_URL, echo=False)
+
+# ПРИМУСОВЕ ВКЛЮЧЕННЯ КАСКАДНОГО ВИДАЛЕННЯ ДЛЯ SQLITE
+@event.listens_for(engine.sync_engine, "connect")
+def enable_sqlite_fks(dbapi_connection, connection_record):
+    cursor = dbapi_connection.cursor()
+    cursor.execute("PRAGMA foreign_keys=ON")
+    cursor.close()
+
 AsyncSessionLocal = async_sessionmaker(bind=engine, class_=AsyncSession, expire_on_commit=False)
 
 class Base(DeclarativeBase):
@@ -186,8 +203,15 @@ class User(Base):
     role: Mapped[str] = mapped_column(String, default="client")
     created_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=datetime.datetime.utcnow)
     
+    streak: Mapped[int] = mapped_column(Integer, default=0)
+    last_closed_date: Mapped[str] = mapped_column(String, nullable=True)
+    digest_time: Mapped[str] = mapped_column(String, default="21:00")
+    last_digest_date: Mapped[str] = mapped_column(String, nullable=True)
+    
     targets: Mapped["ClientTarget"] = relationship("ClientTarget", back_populates="user", cascade="all, delete-orphan")
     entries: Mapped[list["FoodEntry"]] = relationship("FoodEntry", back_populates="user", cascade="all, delete-orphan")
+    weight_logs: Mapped[list["WeightLog"]] = relationship("WeightLog", cascade="all, delete-orphan") # ДОДАНО
+    day_closures: Mapped[list["DayClosure"]] = relationship("DayClosure", cascade="all, delete-orphan") # ДОДАНО
 
 class ClientTarget(Base):
     __tablename__ = "client_targets"
@@ -197,7 +221,6 @@ class ClientTarget(Base):
     fats_target: Mapped[float] = mapped_column(Float, default=3.0)
     fruits_target: Mapped[float] = mapped_column(Float, default=1.0)
     veggies_target: Mapped[float] = mapped_column(Float, default=400.0)
-    
     user: Mapped["User"] = relationship("User", back_populates="targets")
 
 class FoodEntry(Base):
@@ -209,7 +232,6 @@ class FoodEntry(Base):
     product_name: Mapped[str] = mapped_column(String)
     amount: Mapped[float] = mapped_column(Float)
     portions: Mapped[float] = mapped_column(Float)
-    
     user: Mapped["User"] = relationship("User", back_populates="entries")
 
 class InviteToken(Base):
@@ -226,6 +248,21 @@ class FoodProduct(Base):
     size: Mapped[float] = mapped_column(Float)
     unit: Mapped[str] = mapped_column(String, default="г")
 
+class WeightLog(Base):
+    __tablename__ = "weight_logs"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    date: Mapped[str] = mapped_column(String, index=True)
+    weight: Mapped[float] = mapped_column(Float)
+    created_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=datetime.datetime.utcnow)
+
+class DayClosure(Base):
+    __tablename__ = "day_closures"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    date: Mapped[str] = mapped_column(String, index=True)
+    closed_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=datetime.datetime.utcnow)
+
 async def init_db():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
@@ -234,17 +271,10 @@ async def init_db():
         prod_check = await session.execute(select(FoodProduct).limit(1))
         if not prod_check.scalar_one_or_none():
             from config import FOOD_CATALOG
-            print("🗄️ Виявлено порожню таблицю продуктів. Запускаю міграцію повного базового раціону...")
             for cat_key, cat_data in FOOD_CATALOG.items():
                 for p_name, p_info in cat_data["items"].items():
-                    session.add(FoodProduct(
-                        category=cat_key,
-                        name=p_name,
-                        size=p_info["size"],
-                        unit=p_info["unit"]
-                    ))
+                    session.add(FoodProduct(category=cat_key, name=p_name, size=p_info["size"], unit=p_info["unit"]))
             await session.commit()
-            print("✅ Еталонний раціон успішно перенесено в базу!")
 ```
 
 ---
@@ -253,16 +283,16 @@ async def init_db():
 ```py
 # Gym_Bot/handlers_client.py
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from aiogram import Router, types, F, Bot
-from aiogram.filters import CommandStart
+from aiogram.filters import CommandStart, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from sqlalchemy import select, text, delete
 
 from config import ADMIN_IDS
-from database import AsyncSessionLocal, User, ClientTarget, FoodEntry, InviteToken, FoodProduct
+from database import AsyncSessionLocal, User, ClientTarget, FoodEntry, InviteToken, FoodProduct, WeightLog, DayClosure
 from keyboards import client_main_keyboard, trainer_main_keyboard, client_categories_keyboard, client_products_keyboard
 
 router = Router()
@@ -270,8 +300,11 @@ router = Router()
 class ClientLogFSM(StatesGroup):
     waiting_for_grams = State()
     waiting_for_pure_veggies = State()
+    waiting_for_weight = State()
+    waiting_for_anything_name = State()   # Новий стан для назви "Будь-що"
+    waiting_for_anything_grams = State()  # Новий стан для ваги "Будь-що"
 
-CAT_EMOJIS = {"protein": "🥩 Білки", "carbs": "🍚 Вуглеводи", "fats": "🥜 Жири", "fruits": "🍎 Фрукти"}
+CAT_EMOJIS = {"protein": "🥩 Білки", "carbs": "🍚 Вуглеводи", "fats": "🥜 Жири", "fruits": "🍎 Фрукти", "anything": "🍩 Будь-що"}
 
 def generate_visual_bar(current: float, target: float) -> str:
     if target <= 0: return "<code>[░░░░░░░░░░]</code>"
@@ -280,10 +313,37 @@ def generate_visual_bar(current: float, target: float) -> str:
     bar = "🟩" * filled + "⬜" * (10 - filled)
     return f"<code>{bar}</code>"
 
+async def get_weight_delta_str(session, user_id: int) -> str:
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    seven_days_ago = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
+    
+    res_now = await session.execute(select(WeightLog).where(WeightLog.user_id == user_id).order_by(WeightLog.date.desc()).limit(1))
+    latest_log = res_now.scalar_one_or_none()
+    if not latest_log: return "Вага: <code>не вносилась</code>"
+    
+    res_7 = await session.execute(select(WeightLog).where(WeightLog.user_id == user_id, WeightLog.date <= seven_days_ago).order_by(WeightLog.date.desc()).limit(1))
+    old_log = res_7.scalar_one_or_none()
+    
+    delta_str = ""
+    if old_log:
+        diff = latest_log.weight - old_log.weight
+        sign = "+" if diff > 0 else ""
+        delta_str = f" ({sign}{diff:.1f} кг за тиждень)"
+        
+    return f"⚖️ Поточна вага: <b>{latest_log.weight:.1f} кг</b>{delta_str}"
+
 async def get_client_dashboard(user_id: int) -> str:
     today = datetime.now().strftime("%Y-%m-%d")
     async with AsyncSessionLocal() as session:
         target = await session.get(ClientTarget, user_id)
+        if not target:
+            target = ClientTarget(user_id=user_id, protein_target=3.5, carbs_target=3.0, fats_target=3.0, fruits_target=1.0, veggies_target=400.0)
+            session.add(target)
+            await session.commit()
+            target = await session.get(ClientTarget, user_id)
+
+        user_obj = await session.get(User, user_id)
+        streak_val = user_obj.streak if user_obj else 0
         
         query = text("""
             SELECT category, SUM(amount), SUM(portions) 
@@ -293,16 +353,33 @@ async def get_client_dashboard(user_id: int) -> str:
         """)
         rows = (await session.execute(query, {"uid": user_id, "dt": today})).all()
         
+        closure_check = await session.execute(select(DayClosure).where(DayClosure.user_id == user_id, DayClosure.date == today))
+        is_day_closed = closure_check.scalar_one_or_none() is not None
+        
+        weight_text = await get_weight_delta_str(session, user_id)
+        
     totals = {"protein": 0.0, "carbs": 0.0, "fats": 0.0, "fruits": 0.0, "veggies": 0.0}
     for r in rows:
-        if r[0] == "veggies": totals["veggies"] = float(r[1] or 0)
-        else: totals[r[0]] = float(r[2] or 0)
+        cat = r[0]
+        if cat == "veggies": 
+            totals["veggies"] = float(r[1] or 0)
+        elif cat == "anything":
+            totals["carbs"] += float(r[2] or 0)
+            totals["fruits"] += float(r[2] or 0)
+        else:
+            if cat in totals:
+                totals[cat] += float(r[2] or 0)
         
     def check_mark(curr, target_val): return "✅" if curr >= target_val else "⏳"
+    
+    status_day = "\n🔒 <b>ЦЕЙ ДЕНЬ УСПІШНО ЗАКРИТО ТРЕНЕРУ!</b>" if is_day_closed else ""
+    streak_emoji = "🔥" if streak_val > 0 else "🎯"
     
     return (
         f"🍏 <b>Щоденник харчування</b>\n"
         f"Дата: <b>{datetime.now().strftime('%d.%m.%Y')}</b>\n"
+        f"{streak_emoji} Дисципліна: <b>{streak_val} днів поспіль</b>\n"
+        f"{weight_text}{status_day}\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
         f"🥩 <b>Білки:</b> {totals['protein']:.2f} / {target.protein_target:.1f} порц. {check_mark(totals['protein'], target.protein_target)}\n"
         f"{generate_visual_bar(totals['protein'], target.protein_target)}\n\n"
@@ -315,47 +392,57 @@ async def get_client_dashboard(user_id: int) -> str:
         f"🥗 <b>Овочі:</b> {int(totals['veggies'])} / {int(target.veggies_target)} г {check_mark(totals['veggies'], target.veggies_target)}\n"
         f"{generate_visual_bar(totals['veggies'], target.veggies_target)}\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"<i>💡 Оберіть макронутрієнт для додавання ваги з ваг:</i>"
+        f"<i>💡 Порада: Ти можеш просто написати в чат текст виду: 'Гречка 120' для миттєвого внесення ваги!</i>"
     )
 
+# МОДИФІКОВАНИЙ СТАРТ: Дозволяє адміну стати клієнтом, якщо є токен інвайту
 @router.message(CommandStart())
 async def cmd_start(message: types.Message, state: FSMContext):
+    await state.clear()
     uid = message.from_user.id
-    if uid in ADMIN_IDS:
-        return await message.answer("🧠 <b>Вітаю, Тренер!</b> Робоче середовище CRM активоване.", reply_markup=trainer_main_keyboard(), parse_mode="HTML")
-        
-    async with AsyncSessionLocal() as session:
-        user = (await session.execute(select(User).where(User.telegram_id == uid))).scalars().first()
-        
-    if user:
-        return await message.answer("👋 З поверненням!", reply_markup=client_main_keyboard(is_admin=False))
-        
     args = message.text.split()
     token = args[1] if len(args) > 1 else None
-    if not token: return await message.answer("❌ Вхід можливий тільки за лінком від тренера.")
-        
+    
     async with AsyncSessionLocal() as session:
-        inv = await session.get(InviteToken, token)
-        if not inv or inv.is_used: return await message.answer("❌ Посилання недійсне.")
+        user_req = await session.execute(select(User).where(User.telegram_id == uid))
+        user = user_req.scalars().first()
+        
+        if token:
+            inv = await session.get(InviteToken, token)
+            if inv and not inv.is_used:
+                if not user:
+                    user = User(telegram_id=uid, username=message.from_user.username, full_name=message.from_user.full_name or "Клієнт", role="client")
+                    session.add(user)
+                else:
+                    user.role = "client" # Перемикаємо роль на клієнта, якщо використано інвайт тренера
+                await session.flush()
+                
+                await session.execute(delete(ClientTarget).where(ClientTarget.user_id == user.id))
+                session.add(ClientTarget(user_id=user.id, protein_target=3.5, carbs_target=3.0, fats_target=3.0, fruits_target=1.0, veggies_target=400.0))
+                inv.is_used = True
+                await session.commit()
+                return await message.answer("🎉 <b>Реєстрація успішна! Ви стали клієнтом свого тренера.</b>", reply_markup=client_main_keyboard(is_admin=(uid in ADMIN_IDS)), parse_mode="HTML")
+
+        if user:
+            if user.role == "trainer" or (uid in ADMIN_IDS and user.role != "client"):
+                return await message.answer("🧠 <b>Вітаю, Тренер!</b> Робоче середовище CRM активоване.", reply_markup=trainer_main_keyboard(), parse_mode="HTML")
+            return await message.answer("👋 З поверненням!", reply_markup=client_main_keyboard(is_admin=(uid in ADMIN_IDS)))
+
+        if uid in ADMIN_IDS:
+            user = User(telegram_id=uid, username=message.from_user.username, full_name=message.from_user.full_name or "Trainer", role="trainer")
+            session.add(user)
+            await session.commit()
+            return await message.answer("🧠 <b>Вітаю, Тренер!</b> Робоче середовище CRM активоване.", reply_markup=trainer_main_keyboard(), parse_mode="HTML")
             
-        new_user = User(telegram_id=uid, username=message.from_user.username, full_name=message.from_user.full_name or "Клієнт", role="client")
-        session.add(new_user)
-        await session.flush()
-        
-        await session.execute(delete(ClientTarget).where(ClientTarget.user_id == new_user.id))
-        session.add(ClientTarget(user_id=new_user.id, protein_target=3.5, carbs_target=3.0, fats_target=3.0, fruits_target=1.0, veggies_target=400.0))
-        inv.is_used = True
-        await session.commit()
-        
-    await message.answer("🎉 <b>Реєстрація успішна!</b>", reply_markup=client_main_keyboard(is_admin=False), parse_mode="HTML")
+        return await message.answer("❌ <b>Доступ заборонено!</b>\nВхід можливий тільки за лінком від тренера.", parse_mode="HTML")
 
 @router.message(F.text == "🍏 Мій раціон")
-async def cl_diet_menu(message: types.Message):
+async def cl_diet_menu(message: types.Message, state: FSMContext):
+    await state.clear()
     uid = message.from_user.id
     async with AsyncSessionLocal() as session:
         user = (await session.execute(select(User).where(User.telegram_id == uid))).scalars().first()
     if not user: return await message.answer("❌ Натисніть /start")
-    
     dash = await get_client_dashboard(user.id)
     await message.answer(dash, reply_markup=client_categories_keyboard(), parse_mode="HTML")
 
@@ -364,27 +451,90 @@ async def cal_client_food_home(callback: types.CallbackQuery, state: FSMContext)
     await state.clear()
     async with AsyncSessionLocal() as session:
         user = (await session.execute(select(User).where(User.telegram_id == callback.from_user.id))).scalars().first()
+    if not user: return await callback.answer("❌ Профіль не знайдено.", show_alert=True)
     dash = await get_client_dashboard(user.id)
     await callback.message.edit_text(text=dash, reply_markup=client_categories_keyboard(), parse_mode="HTML")
     await callback.answer()
 
+# ДИНАМІЧНИЙ ДІАЛОГ ДЛЯ КАТЕГОРІЇ БУДЬ-ЩО (БЕЗ СПИСКУ)
+@router.callback_query(F.data.startswith("client_cat_"))
+async def cal_client_cat(callback: types.CallbackQuery, state: FSMContext):
+    cat = callback.data.replace("client_cat_", "")
+    if cat == "anything":
+        await state.set_state(ClientLogFSM.waiting_for_anything_name)
+        await state.update_data(msg_id=callback.message.message_id)
+        await callback.message.edit_text("🍩 <b>Введіть назву продукту категорії Будь-що:</b>\n<i>(наприклад: Соус, Чіпси, Снікерс, Кола)</i>", parse_mode="HTML")
+        await callback.answer()
+        return
+        
+    async with AsyncSessionLocal() as session:
+        res = await session.execute(select(FoodProduct).where(FoodProduct.category == cat).order_by(FoodProduct.name))
+        products_list = res.scalars().all()
+    await callback.message.edit_text(text=f"⬇️ <b>Оберіть продукт з бази даних: {CAT_EMOJIS[cat]}</b>", reply_markup=client_products_keyboard(products_list, cat), parse_mode="HTML")
+    await callback.answer()
+
+@router.message(StateFilter(ClientLogFSM.waiting_for_anything_name))
+async def process_anything_name(message: types.Message, state: FSMContext, bot: Bot):
+    name = message.text.strip()
+    data = await state.get_data()
+    await message.delete()
+    
+    await state.update_data(anything_name=name)
+    await state.set_state(ClientLogFSM.waiting_for_anything_grams)
+    await bot.edit_message_text(
+        text=f"🍩 Продукт: <b>{name}</b>\n\nТепер введіть **вагу в грамах** (або об'єм у мл):\n<i>💡 Розрахунок: 50г снеків = 1 порц. БЖВ | 500мл напою = 1 порц. БЖВ</i>",
+        chat_id=message.chat.id,
+        message_id=data["msg_id"],
+        parse_mode="HTML"
+    )
+
+@router.message(StateFilter(ClientLogFSM.waiting_for_anything_grams))
+async def process_anything_grams(message: types.Message, state: FSMContext, bot: Bot):
+    raw = message.text.strip().replace(",", ".")
+    if not re.match(r"^\d+(?:\.\d+)?$", raw): return await message.answer("❌ Введіть число!")
+    
+    grams = float(raw)
+    data = await state.get_data()
+    await state.clear()
+    
+    # Інтелектуальний роздільник рідке/тверде за правилами заміни
+    lower_name = data["anything_name"].lower()
+    if any(k in lower_name for k in ["кола", "cola", "напій", "напиток", "сік", "сок", "pepsi", "пепсі", "мл"]):
+        portions = grams / 500.0
+        unit = "мл"
+    else:
+        portions = grams / 50.0
+        unit = "г"
+        
+    today = datetime.now().strftime("%Y-%m-%d")
+    async with AsyncSessionLocal() as session:
+        user = (await session.execute(select(User).where(User.telegram_id == message.from_user.id))).scalars().first()
+        session.add(FoodEntry(user_id=user.id, date=today, category="anything", product_name=data["anything_name"], amount=grams, portions=portions))
+        await session.commit()
+        
+    try: await bot.delete_message(chat_id=message.chat.id, message_id=data["msg_id"])
+    except Exception: pass
+    await message.delete()
+    
+    dash = await get_client_dashboard(user.id)
+    await message.answer(text=f"✅ Внесено {grams:g} {unit} Будь-що (<b>{data['anything_name']}</b>) -> {portions:.2f} порц. БЖВ-заміни\n\n" + dash, reply_markup=client_categories_keyboard(), parse_mode="HTML")
+
+# РЕШТА ФУНКЦІОНАЛУ (ЩОДЕННИКИ, ВАГА, ЗАКРИТТЯ) ЗАЛИШАЄТЬСЯ БЕЗ ЗМІН
 @router.callback_query(F.data == "client_view_logs")
 async def cal_client_view_logs(callback: types.CallbackQuery):
     today = datetime.now().strftime("%Y-%m-%d")
     async with AsyncSessionLocal() as session:
         user = (await session.execute(select(User).where(User.telegram_id == callback.from_user.id))).scalars().first()
+        if not user: return await callback.answer("❌ Профіль не знайдено.", show_alert=True)
         res = await session.execute(select(FoodEntry).where(FoodEntry.user_id == user.id, FoodEntry.date == today))
         entries = res.scalars().all()
-        
     if not entries: return await callback.answer("📭 Сьогодні ви ще не вносили продуктів.", show_alert=True)
-        
     builder = InlineKeyboardBuilder()
     text_data = "📝 <b>Зважені продукти за сьогодні:</b>\n\n"
     for e in entries:
-        portions_info = f"({e.portions:.2f} порц.)" if e.category != "veggies" else ""
+        portions_info = f"({e.portions:.2f} порц.)" if e.category not in ["veggies", "anything"] else f"({e.portions:.2f} порц. БЖВ-заміни)"
         text_data += f"• <b>{e.product_name}</b>: {e.amount:g} г/шт {portions_info}\n"
         builder.button(text=f"❌ Видалити {e.product_name[:12]}...", callback_data=f"cl_dellog_{e.id}")
-        
     builder.button(text="🔙 Назад", callback_data="client_food_home")
     builder.adjust(1)
     await callback.message.edit_text(text=text_data, reply_markup=builder.as_markup(), parse_mode="HTML")
@@ -396,63 +546,35 @@ async def cal_client_delete_log_entry(callback: types.CallbackQuery):
     async with AsyncSessionLocal() as session:
         await session.execute(delete(FoodEntry).where(FoodEntry.id == entry_id))
         await session.commit()
-    await callback.answer("🗑️ Запис видалено з журналу!")
+    await callback.answer("🗑️ Запис вилучено!")
     await cal_client_view_logs(callback)
-
-@router.callback_query(F.data.startswith("client_cat_"))
-async def cal_client_cat(callback: types.CallbackQuery):
-    cat = callback.data.replace("client_cat_", "")
-    
-    # Вичитуємо список продуктів безпосередньо з бази даних SQLite
-    async with AsyncSessionLocal() as session:
-        res = await session.execute(select(FoodProduct).where(FoodProduct.category == cat).order_by(FoodProduct.name))
-        products_list = res.scalars().all()
-        
-    await callback.message.edit_text(
-        text=f"⬇️ <b>Оберіть продукт з бази даних: {CAT_EMOJIS[cat]}</b>", 
-        reply_markup=client_products_keyboard(products_list, cat), 
-        parse_mode="HTML"
-    )
-    await callback.answer()
 
 @router.callback_query(F.data.startswith("cl_dbprod_"))
 async def cal_client_dbproduct_click(callback: types.CallbackQuery, state: FSMContext):
     pid = int(callback.data.split("_")[2])
-    
     async with AsyncSessionLocal() as session:
         product = await session.get(FoodProduct, pid)
-        
-    if not product: return await callback.answer("Продукт не знайдено в базі.", show_alert=True)
-    
+    if not product: return await callback.answer("Проdukt не знайдено.", show_alert=True)
     await state.set_state(ClientLogFSM.waiting_for_grams)
     await state.update_data(cat=product.category, name=product.name, size=product.size, unit=product.unit, msg_id=callback.message.message_id)
-    
-    await callback.message.edit_text(
-        text=f"✍️ Введіть вагу для: <b>{product.name}</b>\n1 порція = <b>{int(product.size)} {product.unit}</b>:", 
-        parse_mode="HTML"
-    )
+    await callback.message.edit_text(text=f"✍️ Введіть вагу для: <b>{product.name}</b>\n1 порція = <b>{int(product.size)} {product.unit}</b>:", parse_mode="HTML")
 
-@router.message(ClientLogFSM.waiting_for_grams)
+@router.message(StateFilter(ClientLogFSM.waiting_for_grams))
 async def process_grams_input(message: types.Message, state: FSMContext, bot: Bot):
     raw = message.text.strip().replace(",", ".")
     if not re.match(r"^\d+(?:\.\d+)?$", raw): return await message.answer("❌ Введіть число!")
-        
     grams = float(raw)
     data = await state.get_data()
     await state.clear()
-    
     portions = grams / data["size"]
     today = datetime.now().strftime("%Y-%m-%d")
-    
     async with AsyncSessionLocal() as session:
         user = (await session.execute(select(User).where(User.telegram_id == message.from_user.id))).scalars().first()
         session.add(FoodEntry(user_id=user.id, date=today, category=data["cat"], product_name=data["name"], amount=grams, portions=portions))
         await session.commit()
-        
     try: await bot.delete_message(chat_id=message.chat.id, message_id=data["msg_id"])
     except Exception: pass
     await message.delete()
-    
     dash = await get_client_dashboard(user.id)
     await message.answer(text=f"✅ Внесено {grams:g} {data['unit']} {data['name']}\n\n" + dash, reply_markup=client_categories_keyboard(), parse_mode="HTML")
 
@@ -463,37 +585,157 @@ async def cal_v_start(callback: types.CallbackQuery, state: FSMContext):
     await callback.message.edit_text(text="🥗 Введіть вагу овочів у грамах:")
     await callback.answer()
 
-@router.message(ClientLogFSM.waiting_for_pure_veggies)
+@router.message(StateFilter(ClientLogFSM.waiting_for_pure_veggies))
 async def process_v_input(message: types.Message, state: FSMContext, bot: Bot):
     try: grams = float(message.text.replace(",", "."))
     except ValueError: return await message.answer("❌ Число!")
     data = await state.get_data()
     await state.clear()
     today = datetime.now().strftime("%Y-%m-%d")
-    
     async with AsyncSessionLocal() as session:
         user = (await session.execute(select(User).where(User.telegram_id == message.from_user.id))).scalars().first()
         session.add(FoodEntry(user_id=user.id, date=today, category="veggies", product_name="Овочі", amount=grams, portions=0.0))
         await session.commit()
-        
     try: await bot.delete_message(chat_id=message.chat.id, message_id=data["msg_id"])
     except Exception: pass
     await message.delete()
-    
     dash = await get_client_dashboard(user.id)
     await message.answer(text=dash, reply_markup=client_categories_keyboard(), parse_mode="HTML")
 
-@router.callback_query(F.data == "client_clear_day")
-async def cal_clear_day(callback: types.CallbackQuery):
+@router.callback_query(F.data == "client_clear_day_ask")
+async def cal_clear_day_ask(callback: types.CallbackQuery):
+    kb = InlineKeyboardBuilder()
+    kb.button(text="⚠️ ТАК, ОЧИСТИТИ ДЕНЬ", callback_data="client_clear_day_confirm")
+    kb.button(text="❌ СКАСУВАТИ", callback_data="client_food_home")
+    kb.adjust(1)
+    await callback.message.edit_text("⚠️ Ви впевнені, що хочете видалити всі записи та зняти фіксацію закритого дня за сьогодні?", reply_markup=kb.as_markup())
+
+@router.callback_query(F.data == "client_clear_day_confirm")
+async def cal_clear_day_confirm(callback: types.CallbackQuery):
     today = datetime.now().strftime("%Y-%m-%d")
     async with AsyncSessionLocal() as session:
         user = (await session.execute(select(User).where(User.telegram_id == callback.from_user.id))).scalars().first()
+        if not user: return await callback.answer("❌ Профіль не знайдено.", show_alert=True)
         await session.execute(delete(FoodEntry).where(FoodEntry.user_id == user.id, FoodEntry.date == today))
+        await session.execute(delete(DayClosure).where(DayClosure.user_id == user.id, DayClosure.date == today))
         await session.commit()
-        
-    dash = await get_client_dashboard(user.id)
-    await callback.message.edit_text(text="🧹 Очищено!\n\n" + dash, reply_markup=client_categories_keyboard(), parse_mode="HTML")
+        uid = user.id
+    dash = await get_client_dashboard(uid)
+    await callback.message.edit_text(text="🧹 Журнал за сьогодні повністю очищено!\n\n" + dash, reply_markup=client_categories_keyboard(), parse_mode="HTML")
     await callback.answer()
+
+@router.callback_query(F.data == "client_weight_log")
+async def cal_client_weight_start(callback: types.CallbackQuery, state: FSMContext):
+    await state.set_state(ClientLogFSM.waiting_for_weight)
+    await state.update_data(msg_id=callback.message.message_id)
+    await callback.message.edit_text("⚖️ Введіть вашу **поточну ранкову вагу** в кілограмах (наприклад <code>74.5</code>):", parse_mode="HTML")
+    await callback.answer()
+
+@router.message(StateFilter(ClientLogFSM.waiting_for_weight))
+async def process_client_weight_input(message: types.Message, state: FSMContext, bot: Bot):
+    raw = message.text.strip().replace(",", ".")
+    if not re.match(r"^\d+(?:\.\d+)?$", raw): return await message.answer("❌ Введіть число!")
+    weight = float(raw)
+    data = await state.get_data()
+    await state.clear()
+    today = datetime.now().strftime("%Y-%m-%d")
+    async with AsyncSessionLocal() as session:
+        user = (await session.execute(select(User).where(User.telegram_id == message.from_user.id))).scalars().first()
+        if user:
+            await session.execute(delete(WeightLog).where(WeightLog.user_id == user.id, WeightLog.date == today))
+            session.add(WeightLog(user_id=user.id, date=today, weight=weight))
+            await session.commit()
+    try: await bot.delete_message(chat_id=message.chat.id, message_id=data["msg_id"])
+    except Exception: pass
+    await message.delete()
+    dash = await get_client_dashboard(user.id)
+    await message.answer(text="⚖️ Вагу успішно зафіксовано в системі!\n\n" + dash, reply_markup=client_categories_keyboard(), parse_mode="HTML")
+
+@router.callback_query(F.data == "client_close_day")
+async def cal_client_close_day_trigger(callback: types.CallbackQuery, bot: Bot):
+    uid = callback.from_user.id
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    yesterday_str = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+    async with AsyncSessionLocal() as session:
+        user = (await session.execute(select(User).where(User.telegram_id == uid))).scalars().first()
+        if not user: return
+        already_closed = await session.execute(select(DayClosure).where(DayClosure.user_id == user.id, DayClosure.date == today_str))
+        if already_closed.scalar_one_or_none(): return await callback.answer("🔒 Цей day уже закритий тренеру!", show_alert=True)
+        if user.last_closed_date == yesterday_str: user.streak += 1
+        elif user.last_closed_date != today_str: user.streak = 1
+        user.last_closed_date = today_str
+        session.add(DayClosure(user_id=user.id, date=today_str))
+        query = text("SELECT category, SUM(portions) FROM food_entries WHERE user_id = :uid AND date = :dt GROUP BY category")
+        rows = (await session.execute(query, {"uid": user.id, "dt": today_str})).all()
+        target = await session.get(ClientTarget, user.id)
+        await session.commit()
+    totals = {"protein": 0.0, "carbs": 0.0, "fats": 0.0, "fruits": 0.0}
+    for r in rows:
+        cat = r[0]
+        if cat == "anything":
+            totals["carbs"] += float(r[1] or 0)
+            totals["fruits"] += float(r[1] or 0)
+        else:
+            if cat in totals: totals[cat] += float(r[1] or 0)
+    await callback.answer("🔒 День успішно зафіксовано та надіслано тренеру!", show_alert=True)
+    dash = await get_client_dashboard(user.id)
+    await callback.message.edit_text(text=dash, reply_markup=client_categories_keyboard(), parse_mode="HTML")
+    trainer_push = (
+        f"🔥 <b>Клієнт закрив день дисципліни!</b>\nСпортсмен: <b>{user.full_name}</b>\nСерія регулярності: <b>{user.streak} днів поспіль</b>\n\n"
+        f"📊 <b>Виконання плану:</b>\n  🥩 Б: {totals['protein']:.1f}/{target.protein_target:.1f} порц.\n"
+        f"  🍚 В: {totals['carbs']:.1f}/{target.carbs_target:.1f} порц.\n  🥜 Ж: {totals['fats']:.1f}/{target.fats_target:.1f} порц."
+    )
+    for trainer_id in ADMIN_IDS:
+        try: await bot.send_message(chat_id=trainer_id, text=trainer_push, parse_mode="HTML")
+        except Exception: pass
+
+@router.message(StateFilter(None), F.text, ~F.text.startswith("/"), ~F.text.in_([
+    "🍏 Мій раціон", "🧪 Тест клієнта", "🧠 В адмінку", "⚙️ Керувати каталогом", "🕒 Налаштувати звіт", "👥 Мої клієнти", "➕ Створити інвайт"
+]))
+async def text_parsing_express_entry(message: types.Message):
+    uid = message.from_user.id
+    raw_text = message.text.strip()
+    match = re.match(r"^([A-Za-яА-ЯёЁіІїЇєЄґҐ\s'\-]+?)\s+(\d+(?:[.,]\d+)?)$", raw_text)
+    if not match: return await message.answer("🛑 <b>Невідомий формат тексту.</b>\nВнось дані через кнопки або пиши у вигляді: <code>Назва вага</code>.", parse_mode="HTML")
+    query_name = match.group(1).strip()
+    grams = float(match.group(2).replace(",", "."))
+    async with AsyncSessionLocal() as session:
+        user = (await session.execute(select(User).where(User.telegram_id == uid))).scalars().first()
+        if not user: return
+        res = await session.execute(select(FoodProduct).where(FoodProduct.name.like(f"%{query_name}%")))
+        matched_products = res.scalars().all()
+    if not matched_products: return await message.answer(f"❌ Продукту з назвою <b>«{query_name}»</b> не знайдено у каталозі.", parse_mode="HTML")
+    if len(matched_products) == 1:
+        prod = matched_products[0]
+        portions = grams / prod.size
+        today = datetime.now().strftime("%Y-%m-%d")
+        async with AsyncSessionLocal() as session:
+            session.add(FoodEntry(user_id=user.id, date=today, category=prod.category, product_name=prod.name, amount=grams, portions=portions))
+            await session.commit()
+        dash = await get_client_dashboard(user.id)
+        await message.answer(f"🚀 <b>Експрес-запис:</b> внесено {grams:g} {prod.unit} продукту <b>{prod.name}</b>.\n\n" + dash, reply_markup=client_categories_keyboard(), parse_mode="HTML")
+    else:
+        builder = InlineKeyboardBuilder()
+        for p in matched_products: builder.button(text=f"{p.name}", callback_data=f"cl_fastlog_{p.id}_{int(grams)}")
+        builder.adjust(1)
+        await message.answer(f"🔍 Знайдено декілька збігів за назвою <b>«{query_name}»</b>. Оберіть точний варіант:", reply_markup=builder.as_markup(), parse_mode="HTML")
+
+@router.callback_query(F.data.startswith("cl_fastlog_"))
+async def cal_cl_fastlog_confirm(callback: types.CallbackQuery):
+    _, _, pid_str, grams_str = callback.data.split("_")
+    pid = int(pid_str)
+    grams = float(grams_str)
+    async with AsyncSessionLocal() as session:
+        user = (await session.execute(select(User).where(User.telegram_id == callback.from_user.id))).scalars().first()
+        prod = await session.get(FoodProduct, pid)
+        if prod and user:
+            portions = grams / prod.size
+            today = datetime.now().strftime("%Y-%m-%d")
+            session.add(FoodEntry(user_id=user.id, date=today, category=prod.category, product_name=prod.name, amount=grams, portions=portions))
+            await session.commit()
+            await callback.answer(f"Записано: {prod.name}")
+            dash = await get_client_dashboard(user.id)
+            await callback.message.edit_text(text=dash, reply_markup=client_categories_keyboard(), parse_mode="HTML")
 ```
 
 ---
@@ -501,23 +743,24 @@ async def cal_clear_day(callback: types.CallbackQuery):
 ### FILE: Gym_Bot/handlers_trainer.py
 ```py
 # Gym_Bot/handlers_trainer.py
+import re
 import uuid
 from datetime import datetime
 from aiogram import Router, types, F, Bot
+from aiogram.filters import StateFilter, Command # ДОДАТИ ІМПОРТ COMMAND
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from sqlalchemy import select, delete, text
 
 from config import ADMIN_IDS
-from database import AsyncSessionLocal, User, ClientTarget, FoodEntry, InviteToken, FoodProduct
+from database import AsyncSessionLocal, User, ClientTarget, FoodEntry, InviteToken, FoodProduct, WeightLog, DayClosure
 from keyboards import (
     trainer_main_keyboard, trainer_clients_keyboard, trainer_client_manage_keyboard, 
     client_main_keyboard, client_categories_keyboard, trainer_catalog_categories_keyboard,
-    trainer_products_management_keyboard, trainer_product_actions_keyboard
+    trainer_products_management_keyboard, trainer_product_actions_keyboard, trainer_report_time_keyboard
 )
-
-from handlers_client import get_client_dashboard
+from handlers_client import get_client_dashboard, get_weight_delta_str
 
 router = Router()
 
@@ -528,209 +771,181 @@ class EditTargetFSM(StatesGroup):
     waiting_for_fruits = State()
     waiting_for_veggies = State()
 
-# Стани для додавання та редагування продуктів
 class CatalogManageFSM(StatesGroup):
     waiting_for_name = State()
     waiting_for_size = State()
     waiting_for_unit = State()
     waiting_for_new_portion = State()
+    waiting_for_report_time = State()
 
-CAT_TITLES = {"protein": "🥩 Білки", "carbs": "🍚 Вуглеводи", "fats": "🥜 Жири", "fruits": "🍎 Фрукти"}
+CAT_TITLES = {"protein": "🥩 Білки", "carbs": "🍚 Вуглеводи", "fats": "🥜 Жири", "fruits": "🍎 Фрукти", "anything": "🍩 Будь-що"}
 
 def is_trainer(user_id: int) -> bool:
     return user_id in ADMIN_IDS
 
+# ГЛОБАЛЬНА СУПЕРКОМАНДА /ADMIN ДЛЯ ПЕРЕМИКАННЯ В РЕЖИМ РЕЗОЛЬВЕРА CRM
+@router.message(Command("admin"))
+async def cmd_forced_admin_panel(message: types.Message, state: FSMContext):
+    await state.clear()
+    if message.from_user.id not in ADMIN_IDS: return
+    
+    await message.answer(
+        "🧠 <b>Робоче середовище CRM активоване через режим розробника.</b>\n"
+        "Ви можете керувати клієнтами, але ваш особистий щоденник залишається в базі даних як аккаунт клієнта.",
+        reply_markup=trainer_main_keyboard(),
+        parse_mode="HTML"
+    )
+
 @router.message(F.text == "⚙️ Керувати каталогом")
 async def cmd_manage_catalog(message: types.Message):
     if not is_trainer(message.from_user.id): return
-    await message.answer(
-        text="🗄️ <b>Панель управління базою продуктів</b>\n\nОберіть категорію макронутрієнтів, яку ви хочете змінити або доповнити:",
-        reply_markup=trainer_catalog_categories_keyboard(),
-        parse_mode="HTML"
-    )
+    await message.answer("🗄️ <b>Панель управління базою продуктів</b>\n\nОберіть категорію:", reply_markup=trainer_catalog_categories_keyboard(), parse_mode="HTML")
 
 @router.callback_query(F.data == "tr_catmanage_back")
 async def cal_tr_cat_back(callback: types.CallbackQuery):
     if not is_trainer(callback.from_user.id): return
-    await callback.message.edit_text(
-        text="🗄️ <b>Панель управління базою продуктів</b>\n\nОберіть категорію макронутрієнтів, яку ви хочете змінити або доповнити:",
-        reply_markup=trainer_catalog_categories_keyboard(),
-        parse_mode="HTML"
-    )
+    await callback.message.edit_text("🗄️ <b>Панель управління базою продуктів</b>\n\nОберіть категорію:", reply_markup=trainer_catalog_categories_keyboard(), parse_mode="HTML")
     await callback.answer()
 
 @router.callback_query(F.data.startswith("tr_catmanage_"))
 async def cal_tr_show_category_products(callback: types.CallbackQuery):
     if not is_trainer(callback.from_user.id): return
     cat = callback.data.replace("tr_catmanage_", "")
-    
     async with AsyncSessionLocal() as session:
         res = await session.execute(select(FoodProduct).where(FoodProduct.category == cat).order_by(FoodProduct.name))
         products = res.scalars().all()
-        
-    await callback.message.edit_text(
-        text=f"🛒 Список продуктів у категорії <b>{CAT_TITLES[cat]}</b>:\n<i>Натисніть на страву для зміни або видалення.</i>",
-        reply_markup=trainer_products_management_keyboard(products, cat),
-        parse_mode="HTML"
-    )
+    await callback.message.edit_text(text=f"🛒 Список продуктів у <b>{CAT_TITLES[cat]}</b>:", reply_markup=trainer_products_management_keyboard(products, cat), parse_mode="HTML")
     await callback.answer()
 
 @router.callback_query(F.data == "tr_paction_cancel")
 async def cal_paction_cancel(callback: types.CallbackQuery, state: FSMContext):
     await state.clear()
-    await callback.answer()
-    # Повертаємо у вибір категорій
-    await callback.message.edit_text(
-        text="🗄️ <b>Панель управління базою продуктів</b>\n\nОберіть категорію:",
-        reply_markup=trainer_catalog_categories_keyboard(),
-        parse_mode="HTML"
-    )
+    await callback.message.edit_text("🗄️ <b>Панель управління базою продуктів</b>", reply_markup=trainer_catalog_categories_keyboard(), parse_mode="HTML")
 
 @router.callback_query(F.data.startswith("tr_propt_"))
 async def cal_tr_product_options(callback: types.CallbackQuery):
-    if not is_trainer(callback.from_user.id): return
     pid = int(callback.data.split("_")[2])
-    
     async with AsyncSessionLocal() as session:
         product = await session.get(FoodProduct, pid)
-        
-    if not product: return await callback.answer("Продукт видалено.", show_alert=True)
-    
-    await callback.message.edit_text(
-        text=f"⚙️ <b>Керування: {product.name}</b>\n\nПоточна вага однієї порції: <b>{int(product.size)} {product.unit}</b>",
-        reply_markup=trainer_product_actions_keyboard(pid),
-        parse_mode="HTML"
-    )
-    await callback.answer()
+    await callback.message.edit_text(text=f"⚙️ <b>Керування: {product.name}</b>\n\nВага однієї порції: <b>{int(product.size)} {product.unit}</b>", reply_markup=trainer_product_actions_keyboard(pid), parse_mode="HTML")
 
 @router.callback_query(F.data.startswith("tr_paction_del_"))
 async def cal_tr_delete_product(callback: types.CallbackQuery):
-    if not is_trainer(callback.from_user.id): return
     pid = int(callback.data.split("_")[3])
-    
     async with AsyncSessionLocal() as session:
         product = await session.get(FoodProduct, pid)
         if product:
             await session.delete(product)
             await session.commit()
-            
-    await callback.answer("🗑️ Продукт назавжди видалено з бази даних бота!", show_alert=True)
+    await callback.answer("🗑️ Продукт видалено з бази!", show_alert=True)
     await cal_tr_cat_back(callback)
 
-# ЦИКЛ FSM ДЛЯ ЗМІНИ ВАГИ ПОРЦІЇ
 @router.callback_query(F.data.startswith("tr_paction_edit_"))
 async def cal_tr_edit_portion_start(callback: types.CallbackQuery, state: FSMContext):
-    if not is_trainer(callback.from_user.id): return
     pid = int(callback.data.split("_")[3])
-    
     await state.set_state(CatalogManageFSM.waiting_for_new_portion)
     await state.update_data(pid=pid, msg_id=callback.message.message_id)
-    await callback.message.edit_text("⚖️ Введіть **нову чисту вагу однієї порції** у грамах/одиницях (тільки число):")
-    await callback.answer()
+    await callback.message.edit_text("⚖️ Введіть нову чисту вагу однієї порції:")
 
-@router.message(CatalogManageFSM.waiting_for_new_portion)
+@router.message(StateFilter(CatalogManageFSM.waiting_for_new_portion))
 async def process_tr_saving_portion(message: types.Message, state: FSMContext, bot: Bot):
-    if not is_trainer(message.from_user.id): return
     raw = message.text.strip().replace(",", ".")
-    if not re.match(r"^\d+(?:\.\d+)?$", raw):
-        return await message.answer("❌ Введіть число!")
-        
     new_size = float(raw)
     data = await state.get_data()
     await state.clear()
     await message.delete()
-    
     async with AsyncSessionLocal() as session:
         product = await session.get(FoodProduct, data["pid"])
         if product:
             product.size = new_size
             await session.commit()
-            
     kb = InlineKeyboardBuilder().button(text="🔙 До категорій", callback_data="tr_catmanage_back").as_markup()
-    await bot.edit_message_text(
-        text=f"✅ Вагу порції для продукту <b>{product.name}</b> успішно оновлено до <b>{int(new_size)} {product.unit}</b>!",
-        chat_id=message.chat.id,
-        message_id=data["msg_id"],
-        reply_markup=kb,
-        parse_mode="HTML"
-    )
+    await bot.edit_message_text(text=f"✅ Оновлено до <b>{int(new_size)} {product.unit}</b>!", chat_id=message.chat.id, message_id=data["msg_id"], reply_markup=kb, parse_mode="HTML")
 
-# ЦИКЛ FSM ДЛЯ ДОДАВАННЯ НОВОГО ПРОДУКТУ В БАЗУ
 @router.callback_query(F.data.startswith("tr_addprod_"))
 async def cal_tr_add_product_start(callback: types.CallbackQuery, state: FSMContext):
-    if not is_trainer(callback.from_user.id): return
     cat = callback.data.replace("tr_addprod_", "")
-    
     await state.set_state(CatalogManageFSM.waiting_for_name)
     await state.update_data(cat=cat, msg_id=callback.message.message_id)
-    await callback.message.edit_text(text=f"📝 Введіть **назву** нового продукту для категорії {CAT_TITLES[cat]}:")
-    await callback.answer()
+    await callback.message.edit_text(text=f"📝 Введіть назву продукту для {CAT_TITLES[cat]}:")
 
-@router.message(CatalogManageFSM.waiting_for_name)
+@router.message(StateFilter(CatalogManageFSM.waiting_for_name))
 async def process_tr_add_name(message: types.Message, state: FSMContext, bot: Bot):
     p_name = message.text.strip()
     data = await state.get_data()
     await message.delete()
-    
+    async with AsyncSessionLocal() as session:
+        exists = await session.execute(select(FoodProduct).where(FoodProduct.name == p_name))
+        if exists.scalar_one_or_none():
+            kb = InlineKeyboardBuilder().button(text="🔙 Скасувати", callback_data="tr_catmanage_back").as_markup()
+            return await bot.edit_message_text(text=f"❌ Продукт з назвою <b>{p_name}</b> вже існує!\nСпробуйте іншу назву.", chat_id=message.chat.id, message_id=data["msg_id"], reply_markup=kb, parse_mode="HTML")
     await state.update_data(name=p_name)
     await state.set_state(CatalogManageFSM.waiting_for_size)
-    await bot.edit_message_text(
-        text=f"⚖️ Продукт: <b>{p_name}</b>\n\nТепер введіть **вагу базової порції** (число, наприклад <code>100</code> чи <code>50</code>):",
-        chat_id=message.chat.id,
-        message_id=data["msg_id"],
-        parse_mode="HTML"
-    )
+    await bot.edit_message_text(text=f"⚖️ Продукт: <b>{p_name}</b>\n\nВведіть вагу базової порції:", chat_id=message.chat.id, message_id=data["msg_id"], parse_mode="HTML")
 
-@router.message(CatalogManageFSM.waiting_for_size)
+@router.message(StateFilter(CatalogManageFSM.waiting_for_size))
 async def process_tr_add_size(message: types.Message, state: FSMContext, bot: Bot):
-    raw = message.text.strip().replace(",", ".")
-    if not re.match(r"^\d+(?:\.\d+)?$", raw):
-        return await message.answer("❌ Введіть число!")
-        
-    p_size = float(raw)
+    p_size = float(message.text.strip())
     data = await state.get_data()
     await message.delete()
-    
     await state.update_data(size=p_size)
     await state.set_state(CatalogManageFSM.waiting_for_unit)
-    await bot.edit_message_text(
-        text=f"📦 Продукт: <b>{data['name']}</b> ({int(p_size)})\n\nВведіть **одиницю виміру** (наприклад: <code>г</code>, <code>шт</code> або <code>мл</code>):",
-        chat_id=message.chat.id,
-        message_id=data["msg_id"],
-        parse_mode="HTML"
-    )
+    await bot.edit_message_text(text=f"📦 Продукт: <b>{data['name']}</b>\n\nВведіть одиницю виміру (г/шт):", chat_id=message.chat.id, message_id=data["msg_id"], parse_mode="HTML")
 
-@router.message(CatalogManageFSM.waiting_for_unit)
+@router.message(StateFilter(CatalogManageFSM.waiting_for_unit))
 async def process_tr_add_unit(message: types.Message, state: FSMContext, bot: Bot):
     p_unit = message.text.strip()
     data = await state.get_data()
     await state.clear()
     await message.delete()
-    
     async with AsyncSessionLocal() as session:
-        session.add(FoodProduct(
-            category=data["cat"],
-            name=data["name"],
-            size=data["size"],
-            unit=p_unit
-        ))
+        session.add(FoodProduct(category=data["cat"], name=data["name"], size=data["size"], unit=p_unit))
         await session.commit()
-        
-    kb = InlineKeyboardBuilder().button(text="🔙 Назад до управління", callback_data="tr_catmanage_back").as_markup()
-    await bot.edit_message_text(
-        text=f"🚀 <b>Продукт успішно внесено до бази даних!</b>\n\nНазва: <b>{data['name']}</b>\nПорція: <b>{int(data['size'])} {p_unit}</b>\n\nКлієнти вже бачать його у меню.",
-        chat_id=message.chat.id,
-        message_id=data["msg_id"],
-        reply_markup=kb,
-        parse_mode="HTML"
-    )
+    kb = InlineKeyboardBuilder().button(text="🔙 Назад", callback_data="tr_catmanage_back").as_markup()
+    await bot.edit_message_text(text=f"🚀 Продукт <b>{data['name']}</b> успішно додано!", chat_id=message.chat.id, message_id=data["msg_id"], reply_markup=kb, parse_mode="HTML")
 
-# СТАНДАРТНИЙ АДМІН-ФУНКЦІОНАЛ (ПІДТВЕРДЖЕННЯ НОРМ БЖВ)
+@router.message(F.text == "🕒 Налаштувати звіт")
+async def cmd_setup_report_time(message: types.Message):
+    if not is_trainer(message.from_user.id): return
+    async with AsyncSessionLocal() as session:
+        trainer = (await session.execute(select(User).where(User.telegram_id == message.from_user.id))).scalars().first()
+        current_time = trainer.digest_time if trainer else "21:00"
+    await message.answer(text=f"🕒 <b>Управління часом щоденного рапорту</b>\n\nПоточний час пушу: <b>{current_time}</b>\nОберіть пресет:", reply_markup=trainer_report_time_keyboard(), parse_mode="HTML")
+
+@router.callback_query(F.data.startswith("tr_settime_"))
+async def cal_tr_set_report_time(callback: types.CallbackQuery, state: FSMContext):
+    if not is_trainer(callback.from_user.id): return
+    action = callback.data.replace("tr_settime_", "")
+    if action == "manual":
+        await state.set_state(CatalogManageFSM.waiting_for_report_time)
+        await state.update_data(msg_id=callback.message.message_id)
+        return await callback.message.edit_text("✍️ Введіть час у форматі <b>ГГ:ХХ</b>:", parse_mode="HTML")
+    async with AsyncSessionLocal() as session:
+        trainer = (await session.execute(select(User).where(User.telegram_id == callback.from_user.id))).scalars().first()
+        if trainer:
+            trainer.digest_time = action
+            await session.commit()
+    await callback.answer(f"Час розсилки змінено на {action}")
+    await callback.message.edit_text(f"✅ Успішно! Автоматичний щоденний рапорт надходитиме о <b>{action}</b>.", parse_mode="HTML")
+
+@router.message(StateFilter(CatalogManageFSM.waiting_for_report_time))
+async def process_manual_report_time(message: types.Message, state: FSMContext, bot: Bot):
+    raw_time = message.text.strip()
+    if not re.match(r"^([01]?\d|2[0-3]):[0-5]\d$", raw_time): return await message.answer("❌ Невірний формат.", parse_mode="HTML")
+    data = await state.get_data()
+    await state.clear()
+    await message.delete()
+    async with AsyncSessionLocal() as session:
+        trainer = (await session.execute(select(User).where(User.telegram_id == message.from_user.id))).scalars().first()
+        if trainer:
+            trainer.digest_time = raw_time
+            await session.commit()
+    await bot.edit_message_text(text=f"✅ Успішно! Автоматичний щоденний рапорт надходитиме о <b>{raw_time}</b>.", chat_id=message.chat.id, message_id=data["msg_id"], parse_mode="HTML")
+
 @router.message(F.text == "🧪 Тест клієнта")
 async def cmd_test_client_mode(message: types.Message):
     if not is_trainer(message.from_user.id): return
     uid = message.from_user.id
-    
     async with AsyncSessionLocal() as session:
         user = (await session.execute(select(User).where(User.telegram_id == uid))).scalars().first()
         if not user:
@@ -738,21 +953,19 @@ async def cmd_test_client_mode(message: types.Message):
             session.add(user)
             await session.commit()
             await session.refresh(user)
-            
         target = await session.get(ClientTarget, user.id)
         if not target:
             await session.execute(delete(ClientTarget).where(ClientTarget.user_id == user.id))
             session.add(ClientTarget(user_id=user.id, protein_target=3.5, carbs_target=3.0, fats_target=3.0, fruits_target=1.0, veggies_target=400.0))
             await session.commit()
-            
     dash = await get_client_dashboard(user.id)
-    await message.answer("🔄 <b>Активовано тестовий режим інтерфейсу клієнта.</b>\nВи бачите і тестуєте бота точно так само, як ваші клієнти.", reply_markup=client_main_keyboard(is_admin=True), parse_mode="HTML")
+    await message.answer("🔄 <b>Активовано тестовий режим клієнта.</b>", reply_markup=client_main_keyboard(is_admin=True), parse_mode="HTML")
     await message.answer(dash, reply_markup=client_categories_keyboard(), parse_mode="HTML")
 
 @router.message(F.text == "🧠 В адмінку")
 async def cmd_back_to_trainer_mode(message: types.Message):
     if not is_trainer(message.from_user.id): return
-    await message.answer("🧠 <b>Повернено в режим Тренера.</b> Робоче середовище CRM активоване.", reply_markup=trainer_main_keyboard(), parse_mode="HTML")
+    await message.answer("🧠 <b>Повернено в режим Тренера.</b>", reply_markup=trainer_main_keyboard(), parse_mode="HTML")
 
 @router.message(F.text == "➕ Створити інвайт")
 async def cmd_create_invite(message: types.Message, bot: Bot):
@@ -770,14 +983,11 @@ async def cmd_my_clients(message: types.Message):
     async with AsyncSessionLocal() as session:
         res = await session.execute(select(User).where(User.role == "client").order_by(User.full_name))
         clients = res.scalars().all()
-    if not clients: return await message.answer("👥 У вас поки немає зареєстрованих клієнтів.")
+    if not clients: return message.answer("👥 У вас поки немає зареєстрованих клієнтів.")
     await message.answer("📋 <b>Список ваших клієнтів:</b>", reply_markup=trainer_clients_keyboard(clients), parse_mode="HTML")
 
 @router.callback_query(F.data == "tr_list_back")
 async def cal_tr_list_back(callback: types.CallbackQuery):
-    await cal_tr_list_back_logic(callback)
-
-async def cal_tr_list_back_logic(callback: types.CallbackQuery):
     if not is_trainer(callback.from_user.id): return
     async with AsyncSessionLocal() as session:
         res = await session.execute(select(User).where(User.role == "client").order_by(User.full_name))
@@ -792,9 +1002,11 @@ async def cal_tr_view(callback: types.CallbackQuery):
     async with AsyncSessionLocal() as session:
         client = await session.get(User, client_id)
         target = await session.get(ClientTarget, client_id)
+        weight_text = await get_weight_delta_str(session, client_id)
     if not client: return await callback.answer("Клієнта не знайдено.")
     text_data = (
-        f"👤 <b>Клієнт: {client.full_name}</b>\nUsername: @{client.username or 'немає'}\n\n"
+        f"👤 <b>Клієнт: {client.full_name}</b>\nUsername: @{client.username or 'немає'}\n"
+        f"🔥 Стрік дисципліни: <b>{client.streak} днів</b>\n{weight_text}\n\n"
         f"🎯 <b>Поточні норми плану:</b>\n  🥩 Білки: <b>{target.protein_target:.2f} порц.</b>\n"
         f"  🍚 Вуглеводи: <b>{target.carbs_target:.2f} порц.</b>\n  🥜 Жири: <b>{target.fats_target:.2f} порц.</b>\n"
         f"  🍎 Фрукти: <b>{target.fruits_target:.2f} порц.</b>\n  🥗 Овочі: <b>{int(target.veggies_target)} г</b>"
@@ -814,8 +1026,13 @@ async def cal_tr_stats(callback: types.CallbackQuery):
         rows = (await session.execute(query, {"uid": client_id, "dt": today})).all()
     totals = {"protein": 0.0, "carbs": 0.0, "fats": 0.0, "fruits": 0.0, "veggies": 0.0}
     for r in rows:
-        if r[0] == "veggies": totals["veggies"] = float(r[1] or 0)
-        else: totals[r[0]] = float(r[2] or 0)
+        cat = r[0]
+        if cat == "veggies": totals["veggies"] = float(r[1] or 0)
+        elif cat == "anything":
+            totals["carbs"] += float(r[2] or 0)
+            totals["fruits"] += float(r[2] or 0)
+        else:
+            if cat in totals: totals[cat] += float(r[2] or 0)
     report = (
         f"📊 <b>Сьогоднішній звіт: {client.full_name}</b>\nДата: {datetime.now().strftime('%d.%m.%Y')}\n━━━━━━━━━━━━━━━━━━━━━━━━\n"
         f"🥩 Білки: <b>{totals['protein']:.2f}</b> / {target.protein_target:.1f} порц.\n🍚 Вуглеводи: <b>{totals['carbs']:.2f}</b> / {target.carbs_target:.1f} порц.\n"
@@ -833,7 +1050,7 @@ async def cal_tr_edit_start(callback: types.CallbackQuery, state: FSMContext):
     await state.update_data(client_id=client_id, msg_id=callback.message.message_id)
     await callback.message.edit_text("✏️ Введіть нову норму <b>БІЛКІВ</b> (порцій, наприклад <code>3.5</code>):", parse_mode="HTML")
 
-@router.message(EditTargetFSM.waiting_for_protein)
+@router.message(StateFilter(EditTargetFSM.waiting_for_protein))
 async def process_edit_p(message: types.Message, state: FSMContext, bot: Bot):
     try: val = float(message.text.replace(",", "."))
     except ValueError: return message.answer("❌ Число!")
@@ -843,7 +1060,7 @@ async def process_edit_p(message: types.Message, state: FSMContext, bot: Bot):
     await state.set_state(EditTargetFSM.waiting_for_carbs)
     await bot.edit_message_text(text="✏️ Введіть нову норму <b>ВУГЛЕВОДІВ</b>:", chat_id=message.chat.id, message_id=data["msg_id"], parse_mode="HTML")
 
-@router.message(EditTargetFSM.waiting_for_carbs)
+@router.message(StateFilter(EditTargetFSM.waiting_for_carbs))
 async def process_edit_c(message: types.Message, state: FSMContext, bot: Bot):
     try: val = float(message.text.replace(",", "."))
     except ValueError: return message.answer("❌ Число!")
@@ -853,7 +1070,7 @@ async def process_edit_c(message: types.Message, state: FSMContext, bot: Bot):
     await state.set_state(EditTargetFSM.waiting_for_fats)
     await bot.edit_message_text(text="✏️ Введіть нову норму <b>ЖИРІВ</b>:", chat_id=message.chat.id, message_id=data["msg_id"], parse_mode="HTML")
 
-@router.message(EditTargetFSM.waiting_for_fats)
+@router.message(StateFilter(EditTargetFSM.waiting_for_fats))
 async def process_edit_f(message: types.Message, state: FSMContext, bot: Bot):
     try: val = float(message.text.replace(",", "."))
     except ValueError: return message.answer("❌ Число!")
@@ -863,7 +1080,7 @@ async def process_edit_f(message: types.Message, state: FSMContext, bot: Bot):
     await state.set_state(EditTargetFSM.waiting_for_fruits)
     await bot.edit_message_text(text="✏️ Введіть нову норму <b>ФРУКТІВ</b>:", chat_id=message.chat.id, message_id=data["msg_id"], parse_mode="HTML")
 
-@router.message(EditTargetFSM.waiting_for_fruits)
+@router.message(StateFilter(EditTargetFSM.waiting_for_fruits))
 async def process_edit_fr(message: types.Message, state: FSMContext, bot: Bot):
     try: val = float(message.text.replace(",", "."))
     except ValueError: return message.answer("❌ Число!")
@@ -873,7 +1090,7 @@ async def process_edit_fr(message: types.Message, state: FSMContext, bot: Bot):
     await state.set_state(EditTargetFSM.waiting_for_veggies)
     await bot.edit_message_text(text="✏️ Введіть нову норму <b>ОВОЧІВ</b> у грамах:", chat_id=message.chat.id, message_id=data["msg_id"], parse_mode="HTML")
 
-@router.message(EditTargetFSM.waiting_for_veggies)
+@router.message(StateFilter(EditTargetFSM.waiting_for_veggies))
 async def process_edit_v(message: types.Message, state: FSMContext, bot: Bot):
     try: val = float(message.text.replace(",", "."))
     except ValueError: return message.answer("❌ Число!")
@@ -888,19 +1105,30 @@ async def process_edit_v(message: types.Message, state: FSMContext, bot: Bot):
     kb = InlineKeyboardBuilder().button(text="🔙 До профілю", callback_data=f"tr_view_{data['client_id']}").as_markup()
     await bot.edit_message_text(text="✅ <b>План раціону успішно оновлено!</b>", chat_id=message.chat.id, message_id=data["msg_id"], reply_markup=kb, parse_mode="HTML")
 
-@router.callback_query(F.data.startswith("tr_del_"))
-async def cal_tr_del(callback: types.CallbackQuery):
+@router.callback_query(F.data.startswith("tr_delask_"))
+async def cal_tr_del_ask(callback: types.CallbackQuery):
+    if not is_trainer(callback.from_user.id): return
+    client_id = int(callback.data.split("_")[2])
+    kb = InlineKeyboardBuilder()
+    kb.button(text="⚠️ ТАК, ВИДАЛИТИ", callback_data=f"tr_delconfirm_{client_id}")
+    kb.button(text="❌ СКАСУВАТИ", callback_data=f"tr_view_{client_id}")
+    kb.adjust(1)
+    await callback.message.edit_text("⚠️ Ви впевнені, що хочете назавжди видалити цього клієнта та всю його історію?", reply_markup=kb.as_markup())
+
+@router.callback_query(F.data.startswith("tr_delconfirm_"))
+async def cal_tr_del_confirm(callback: types.CallbackQuery):
     if not is_trainer(callback.from_user.id): return
     client_id = int(callback.data.split("_")[2])
     async with AsyncSessionLocal() as session:
         client = await session.get(User, client_id)
-        if client: await session.delete(client)
-        else:
-            await session.execute(delete(ClientTarget).where(ClientTarget.user_id == client_id))
-            await session.execute(delete(FoodEntry).where(FoodEntry.user_id == client_id))
-        await session.commit()
+        if client: 
+            await session.delete(client)
+            await session.commit()
     await callback.answer("Видалено.", show_alert=True)
-    await cal_tr_list_back_logic(callback)
+    async with AsyncSessionLocal() as session:
+        res = await session.execute(select(User).where(User.role == "client").order_by(User.full_name))
+        clients = res.scalars().all()
+    await callback.message.edit_text("📋 <b>Список ваших клієнтів:</b>", reply_markup=trainer_clients_keyboard(clients), parse_mode="HTML")
 ```
 
 ---
@@ -914,7 +1142,8 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 def trainer_main_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(keyboard=[
         [KeyboardButton(text="👥 Мої клієнти"), KeyboardButton(text="➕ Створити інвайт")],
-        [KeyboardButton(text="⚙️ Керувати каталогом"), KeyboardButton(text="🧪 Тест клієнта")]
+        [KeyboardButton(text="⚙️ Керувати каталогом"), KeyboardButton(text="🕒 Налаштувати звіт")],
+        [KeyboardButton(text="🧪 Тест клієнта")]
     ], resize_keyboard=True, is_persistent=True)
 
 def client_main_keyboard(is_admin: bool = False) -> ReplyKeyboardMarkup:
@@ -929,14 +1158,16 @@ def client_categories_keyboard() -> InlineKeyboardMarkup:
     builder.button(text="🍚 Вуглеводи", callback_data="client_cat_carbs")
     builder.button(text="🥜 Жири", callback_data="client_cat_fats")
     builder.button(text="🍎 Фрукти", callback_data="client_cat_fruits")
+    builder.button(text="🍩 Будь-що", callback_data="client_cat_anything")
     builder.button(text="🥗 Овочі (внести в г)", callback_data="client_add_veggies")
     builder.button(text="🔍 Щоденник прийомів", callback_data="client_view_logs")
-    builder.button(text="🧹 Очистити весь день", callback_data="client_clear_day")
-    builder.adjust(2, 2, 1, 1, 1)
+    builder.button(text="⚖️ Внести вагу", callback_data="client_weight_log")
+    builder.button(text="🔒 Закрити день", callback_data="client_close_day")
+    builder.button(text="🧹 Очистити весь день", callback_data="client_clear_day_ask")
+    builder.adjust(2, 2, 1, 1, 2, 1, 1)
     return builder.as_markup()
 
 def client_products_keyboard(products_list: list, category: str) -> InlineKeyboardMarkup:
-    """Генерує список продуктів, вичитаних прямо з бази даних"""
     builder = InlineKeyboardBuilder()
     for p in products_list:
         builder.button(text=f"{p.name} ({int(p.size)}{p.unit})", callback_data=f"cl_dbprod_{p.id}")
@@ -956,18 +1187,18 @@ def trainer_client_manage_keyboard(client_id: int) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     builder.button(text="📊 Статистика за сьогодні", callback_data=f"tr_stats_{client_id}")
     builder.button(text="⚙️ Редагувати норми БЖВ", callback_data=f"tr_edit_{client_id}")
-    builder.button(text="❌ Видалити клієнта", callback_data=f"tr_del_{client_id}")
+    builder.button(text="❌ Видалити клієнта", callback_data=f"tr_delask_{client_id}")
     builder.button(text="🔙 До списку", callback_data="tr_list_back")
     builder.adjust(1)
     return builder.as_markup()
 
-# НОВІ КЛАВІАТУРИ ДЛЯ ТРЕНЕРСЬКОГО КЕРУВАННЯ КАТАЛОГОМ
 def trainer_catalog_categories_keyboard() -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     builder.button(text="🥩 Редагувати Білки", callback_data="tr_catmanage_protein")
     builder.button(text="🍚 Редагувати Вуглеводи", callback_data="tr_catmanage_carbs")
     builder.button(text="🥜 Редагувати Жири", callback_data="tr_catmanage_fats")
     builder.button(text="🍎 Редагувати Фрукти", callback_data="tr_catmanage_fruits")
+    builder.button(text="🍩 Редагувати Будь-що", callback_data="tr_catmanage_anything")
     builder.adjust(1)
     return builder.as_markup()
 
@@ -987,39 +1218,122 @@ def trainer_product_actions_keyboard(product_id: int) -> InlineKeyboardMarkup:
     builder.button(text="🔙 Назад до списку", callback_data="tr_paction_cancel")
     builder.adjust(1)
     return builder.as_markup()
+
+def trainer_report_time_keyboard() -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    times = ["19:00", "20:00", "21:00", "22:00", "23:00"]
+    for t in times:
+        builder.button(text=t, callback_data=f"tr_settime_{t}")
+    builder.button(text="✏️ Ввести інший час вручну", callback_data="tr_settime_manual")
+    builder.adjust(3, 2, 1)
+    return builder.as_markup()
 ```
 
 ---
 
 ### FILE: Gym_Bot/main.py
 ```py
+# Gym_Bot/main.py
 import os
 import sys
-
-# ХАК: Робимо папку Gym_Bot головною для цього процесу
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-
 import asyncio
 import logging
-from aiogram import Bot, Dispatcher
+from datetime import datetime
+from aiogram import Bot, Dispatcher, types
+from sqlalchemy import select, text
 
-# Імпорти локальних модулів
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
 from config import BOT_TOKEN
-from database import init_db
+from database import init_db, AsyncSessionLocal, User, ClientTarget, DayClosure
 from handlers_trainer import router as trainer_router
 from handlers_client import router as client_router
 
 logging.basicConfig(level=logging.INFO, stream=sys.stdout)
 
+dp = Dispatcher()
+@dp.errors()
+async def global_error_handler(event: types.ErrorEvent):
+    logging.error(f"Critical System Error: {event.exception}", exc_info=True)
+
+async def auto_daily_report_scheduler(bot: Bot):
+    print("🕒 Безпечний внутрішній Крон-планувальник звітів успішно ініціалізовано.")
+    while True:
+        try:
+            now = datetime.now()
+            current_time_str = now.strftime("%H:%M")
+            today_str = now.strftime("%Y-%m-%d")
+            
+            async with AsyncSessionLocal() as session:
+                res = await session.execute(
+                    select(User).where(
+                        User.role == "trainer",
+                        User.digest_time == current_time_str,
+                        (User.last_digest_date.is_(None)) | (User.last_digest_date != today_str)
+                    )
+                )
+                trainers_to_alert = res.scalars().all()
+                
+                if trainers_to_alert:
+                    clients_res = await session.execute(select(User).where(User.role == "client").order_by(User.full_name))
+                    all_clients = clients_res.scalars().all()
+                    
+                    if all_clients:
+                        report_lines = [
+                            f"📋 <b>ЩОДЕННИЙ СВЕДЕНИЙ РАПОРТ КЛІЄНТІВ</b>",
+                            f"Дата: <b>{now.strftime('%d.%m.%Y')}</b>\n"
+                        ]
+                        
+                        for client in all_clients:
+                            target = await session.get(ClientTarget, client.id)
+                            
+                            w_res = await session.execute(text("SELECT weight FROM weight_logs WHERE user_id = :uid ORDER BY date DESC LIMIT 1").bindparams(uid=client.id))
+                            w_row = w_res.fetchone()
+                            w_str = f"{w_row[0]:.1f} кг" if w_row else "немає даних"
+                            
+                            f_res = await session.execute(text("SELECT category, SUM(portions) FROM food_entries WHERE user_id = :uid AND date = :dt GROUP BY category").bindparams(uid=client.id, dt=today_str))
+                            f_rows = f_res.fetchall()
+                            
+                            totals = {"protein": 0.0, "carbs": 0.0, "fats": 0.0, "fruits": 0.0}
+                            for r in f_rows:
+                                cat = r[0]
+                                if cat == "anything":
+                                    totals["carbs"] += float(r[1] or 0)
+                                    totals["fruits"] += float(r[1] or 0)
+                                else:
+                                    if cat in totals: totals[cat] += float(r[1] or 0)
+                                
+                            close_res = await session.execute(select(DayClosure).where(DayClosure.user_id == client.id, DayClosure.date == today_str))
+                            status_icon = "🔒 ЗАКРИТО" if close_res.scalar_one_or_none() else "⏳ В процесі"
+                            
+                            report_lines.append(
+                                f"👤 <b>{client.full_name}</b> [{status_icon}]\n"
+                                f"  🔥 Стрік: <code>{client.streak} дн.</code> | Вага: <code>{w_str}</code>\n"
+                                f"  🥩 Б: <b>{totals['protein']:.1f}</b>/{target.protein_target:.1f} порц.\n"
+                                f"  🍚 В: <b>{totals['carbs']:.1f}</b>/{target.carbs_target:.1f} порц.\n"
+                                f"  🍎 Ф: <b>{totals['fruits']:.1f}</b>/{target.fruits_target:.1f} порц.\n"
+                            )
+                        
+                        master_report_text = "\n".join(report_lines)
+                        
+                        for trainer in trainers_to_alert:
+                            try:
+                                await bot.send_message(chat_id=trainer.telegram_id, text=master_report_text, parse_mode="HTML")
+                                trainer.last_digest_date = today_str 
+                            except Exception:
+                                pass
+                        await session.commit()
+                        
+        except Exception as e:
+            logging.error(f"Помилка всередині Крон-планувальника звітів: {e}")
+        await asyncio.sleep(60)
+
 async def main():
     await init_db()
-    
     bot = Bot(token=BOT_TOKEN)
-    dp = Dispatcher()
-    
     dp.include_router(trainer_router)
     dp.include_router(client_router)
-    
+    asyncio.create_task(auto_daily_report_scheduler(bot))
     logging.info("Gym_Bot успішно запустився на особистому ізольованому шляху!")
     await dp.start_polling(bot)
 
