@@ -19,9 +19,19 @@ class User(Base):
     
     # Ролі зберігаються як масив строк у JSON (напр. ["ADMIN", "TRAINER", "CLIENT"])
     roles: Mapped[list] = mapped_column(JSON, default=list)
-    active_role: Mapped[Optional[str]] = mapped_column(String, nullable=True) # Поточна вибрана роль
+    active_role: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    
+    # Права доступу (дублюють ролі для швидких перевірок)
+    is_admin: Mapped[bool] = mapped_column(Boolean, default=False)
+    is_trainer: Mapped[bool] = mapped_column(Boolean, default=False)
+    is_client: Mapped[bool] = mapped_column(Boolean, default=True)
     
     created_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=datetime.datetime.utcnow)
+    
+    # Relationships
+    client_profile: Mapped[Optional["ClientProfile"]] = relationship("ClientProfile", back_populates="user", uselist=False, cascade="all, delete-orphan")
+    trainer_clients: Mapped[List["TrainerClient"]] = relationship("TrainerClient", foreign_keys="TrainerClient.trainer_id", back_populates="trainer", cascade="all, delete-orphan")
+    client_trainers: Mapped[List["TrainerClient"]] = relationship("TrainerClient", foreign_keys="TrainerClient.client_id", back_populates="client", cascade="all, delete-orphan")
 
 class ClientProfile(Base):
     __tablename__ = "client_profiles"
@@ -40,6 +50,9 @@ class ClientProfile(Base):
     next_checkin: Mapped[Optional[datetime.date]] = mapped_column(Date, nullable=True)
     notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    
+    # Relationships
+    user: Mapped["User"] = relationship("User", back_populates="client_profile")
 
 class TrainerClient(Base):
     __tablename__ = "trainer_clients"
@@ -49,6 +62,10 @@ class TrainerClient(Base):
     client_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id", ondelete="CASCADE"), index=True)
     assigned_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=datetime.datetime.utcnow)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    
+    # Relationships
+    trainer: Mapped["User"] = relationship("User", foreign_keys=[trainer_id], back_populates="trainer_clients")
+    client: Mapped["User"] = relationship("User", foreign_keys=[client_id], back_populates="client_trainers")
 
 class TrainerSettings(Base):
     __tablename__ = "trainer_settings"
@@ -56,12 +73,12 @@ class TrainerSettings(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     trainer_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id", ondelete="CASCADE"), unique=True)
     
-    checkin_frequency: Mapped[int] = mapped_column(Integer, default=7) # в днях
+    checkin_frequency: Mapped[int] = mapped_column(Integer, default=7)
     weight_reminder_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     photo_reminder_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     allow_client_edit_food: Mapped[bool] = mapped_column(Boolean, default=True)
     timezone: Mapped[str] = mapped_column(String, default="Europe/Kyiv")
-    default_daily_vegetables: Mapped[int] = mapped_column(Integer, default=400) # грами
+    default_daily_vegetables: Mapped[int] = mapped_column(Integer, default=400)
 
 # ==========================================
 # 2. ХАРЧУВАННЯ ТА ПРОДУКТИ
@@ -79,15 +96,16 @@ class NutritionPlan(Base):
     anything_portions: Mapped[float] = mapped_column(Float, default=0.0)
     vegetables_g: Mapped[int] = mapped_column(Integer, default=400)
     
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=datetime.datetime.utcnow)
     created_by: Mapped[int] = mapped_column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
-    reason: Mapped[Optional[str]] = mapped_column(String, nullable=True) # Чому змінили план
+    reason: Mapped[Optional[str]] = mapped_column(String, nullable=True)
 
 class FoodProduct(Base):
     __tablename__ = "food_products"
     
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    category: Mapped[str] = mapped_column(String, index=True) # protein, carbs, fat, fruit, vegetable, anything
+    category: Mapped[str] = mapped_column(String, index=True)
     name: Mapped[str] = mapped_column(String, unique=True)
     portion_size: Mapped[float] = mapped_column(Float)
     unit: Mapped[str] = mapped_column(String, default="г")
@@ -139,17 +157,35 @@ class FoodDay(Base):
     water_ml: Mapped[int] = mapped_column(Integer, default=0)
     steps: Mapped[int] = mapped_column(Integer, default=0)
     notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    
+    # Relationships
+    entries: Mapped[List["FoodEntry"]] = relationship("FoodEntry", back_populates="food_day", cascade="all, delete-orphan")
+    photos: Mapped[List["FoodPhoto"]] = relationship("FoodPhoto", back_populates="food_day", cascade="all, delete-orphan")
+
+class FoodEntry(Base):
+    __tablename__ = "food_entries"
+    
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    food_day_id: Mapped[int] = mapped_column(Integer, ForeignKey("food_days.id", ondelete="CASCADE"), index=True)
+    
+    category: Mapped[str] = mapped_column(String, index=True)
+    product_name: Mapped[str] = mapped_column(String)
+    amount: Mapped[float] = mapped_column(Float)
+    portions: Mapped[float] = mapped_column(Float, default=0.0)
+    created_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=datetime.datetime.utcnow)
+    
+    # Relationships
+    food_day: Mapped["FoodDay"] = relationship("FoodDay", back_populates="entries")
 
 class Meal(Base):
     __tablename__ = "meals"
     
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     food_day_id: Mapped[int] = mapped_column(Integer, ForeignKey("food_days.id", ondelete="CASCADE"), index=True)
-    name: Mapped[str] = mapped_column(String) # Сніданок, Обід, Вечеря, Перекус
+    name: Mapped[str] = mapped_column(String)
     time: Mapped[Optional[datetime.time]] = mapped_column(Time, nullable=True)
 
 class MealEntry(Base):
-    """Конкретний продукт, з'їдений у певний прийом їжі"""
     __tablename__ = "meal_entries"
     
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -168,6 +204,9 @@ class FoodPhoto(Base):
     comment: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     trainer_comment: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=datetime.datetime.utcnow)
+    
+    # Relationships
+    food_day: Mapped["FoodDay"] = relationship("FoodDay", back_populates="photos")
 
 # ==========================================
 # 4. ТРЕНУВАННЯ
@@ -185,7 +224,7 @@ class ExerciseMedia(Base):
     
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     exercise_id: Mapped[int] = mapped_column(Integer, ForeignKey("exercises.id", ondelete="CASCADE"))
-    type: Mapped[str] = mapped_column(String) # video, gif, photo
+    type: Mapped[str] = mapped_column(String)
     file_id: Mapped[str] = mapped_column(String)
     description: Mapped[Optional[str]] = mapped_column(String, nullable=True)
 
@@ -196,17 +235,23 @@ class WorkoutProgram(Base):
     trainer_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id", ondelete="CASCADE"))
     name: Mapped[str] = mapped_column(String)
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    
+    # Relationships
+    days: Mapped[List["WorkoutDay"]] = relationship("WorkoutDay", back_populates="program", cascade="all, delete-orphan")
 
 class WorkoutDay(Base):
     __tablename__ = "workout_days"
     
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     program_id: Mapped[int] = mapped_column(Integer, ForeignKey("workout_programs.id", ondelete="CASCADE"))
-    name: Mapped[str] = mapped_column(String) # "День 1: Верх"
+    name: Mapped[str] = mapped_column(String)
     order: Mapped[int] = mapped_column(Integer, default=1)
+    
+    # Relationships
+    program: Mapped["WorkoutProgram"] = relationship("WorkoutProgram", back_populates="days")
+    exercises: Mapped[List["WorkoutExercise"]] = relationship("WorkoutExercise", back_populates="workout_day", cascade="all, delete-orphan")
 
 class WorkoutExercise(Base):
-    """Зв'язок вправи з днем тренування (з кастомними нотатками тренера)"""
     __tablename__ = "workout_exercises"
     
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -216,20 +261,36 @@ class WorkoutExercise(Base):
     trainer_video_file_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     trainer_note: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     target_sets: Mapped[int] = mapped_column(Integer, default=3)
-    target_reps: Mapped[str] = mapped_column(String, default="8-12") # Строка, бо може бути "Max" або "8-12"
+    target_reps: Mapped[str] = mapped_column(String, default="8-12")
+    
+    # Relationships
+    workout_day: Mapped["WorkoutDay"] = relationship("WorkoutDay", back_populates="exercises")
+    exercise: Mapped["Exercise"] = relationship("Exercise")
+
+class AssignedProgram(Base):
+    __tablename__ = "assigned_programs"
+    
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id", ondelete="CASCADE"), unique=True, index=True)
+    template_id: Mapped[int] = mapped_column(Integer, ForeignKey("workout_programs.id", ondelete="CASCADE"))
+    program_data: Mapped[dict] = mapped_column(JSON, default=dict)  # Зберігає cloned_program_id
+    
+    assigned_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=datetime.datetime.utcnow)
 
 class WorkoutSession(Base):
-    """Фактичне виконання тренування клієнтом"""
     __tablename__ = "workout_sessions"
     
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     client_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id", ondelete="CASCADE"), index=True)
     workout_day_id: Mapped[int] = mapped_column(Integer, ForeignKey("workout_days.id", ondelete="RESTRICT"))
+    day_name: Mapped[str] = mapped_column(String, default="Тренування")
     date: Mapped[datetime.datetime] = mapped_column(DateTime, default=datetime.datetime.utcnow)
     completed: Mapped[bool] = mapped_column(Boolean, default=False)
+    
+    # Relationships
+    sets: Mapped[List["WorkoutSet"]] = relationship("WorkoutSet", back_populates="session", cascade="all, delete-orphan")
 
 class WorkoutSet(Base):
-    """Запис конкретного підходу клієнтом"""
     __tablename__ = "workout_sets"
     
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -240,6 +301,9 @@ class WorkoutSet(Base):
     reps: Mapped[int] = mapped_column(Integer)
     set_number: Mapped[int] = mapped_column(Integer)
     rpe: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    
+    # Relationships
+    session: Mapped["WorkoutSession"] = relationship("WorkoutSession", back_populates="sets")
 
 # ==========================================
 # 5. ПРОГРЕС, ЧЕКІНИ ТА CRM
@@ -265,7 +329,7 @@ class ProgressPhoto(Base):
     date: Mapped[datetime.date] = mapped_column(Date, default=datetime.date.today)
     
     file_id: Mapped[str] = mapped_column(String)
-    type: Mapped[str] = mapped_column(String) # front, side, back
+    type: Mapped[str] = mapped_column(String)
     weight_at_photo: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     trainer_comment: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
@@ -276,10 +340,10 @@ class CheckIn(Base):
     client_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id", ondelete="CASCADE"), index=True)
     date: Mapped[datetime.date] = mapped_column(Date, default=datetime.date.today)
     
-    sleep: Mapped[int] = mapped_column(Integer) # 1-10
-    energy: Mapped[int] = mapped_column(Integer) # 1-10
-    stress: Mapped[int] = mapped_column(Integer) # 1-10
-    hunger: Mapped[int] = mapped_column(Integer) # 1-10
+    sleep: Mapped[int] = mapped_column(Integer)
+    energy: Mapped[int] = mapped_column(Integer)
+    stress: Mapped[int] = mapped_column(Integer)
+    hunger: Mapped[int] = mapped_column(Integer)
     feeling: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     trainer_feedback: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
@@ -297,7 +361,7 @@ class Broadcast(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     author_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     text: Mapped[str] = mapped_column(Text)
-    target: Mapped[str] = mapped_column(String) # all, active, inactive
+    target: Mapped[str] = mapped_column(String)
     created_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=datetime.datetime.utcnow)
 
 class Notification(Base):
@@ -305,7 +369,7 @@ class Notification(Base):
     
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id", ondelete="CASCADE"), index=True)
-    type: Mapped[str] = mapped_column(String) # weight, photo, training, checkin
+    type: Mapped[str] = mapped_column(String)
     text: Mapped[str] = mapped_column(Text)
     scheduled_at: Mapped[datetime.datetime] = mapped_column(DateTime)
     is_sent: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -316,6 +380,6 @@ class AuditLog(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     actor_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id", ondelete="CASCADE"), index=True)
     target_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=True)
-    action: Mapped[str] = mapped_column(String) # "Trainer changed nutrition plan"
+    action: Mapped[str] = mapped_column(String)
     details: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     date: Mapped[datetime.datetime] = mapped_column(DateTime, default=datetime.datetime.utcnow)

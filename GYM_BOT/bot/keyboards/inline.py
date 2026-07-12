@@ -2,12 +2,15 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.types import InlineKeyboardMarkup
 from aiogram.filters.callback_data import CallbackData
 
+
 class ClientAction(CallbackData, prefix="client"):
     action: str
     client_id: int
 
+
 class TrainerMenu(CallbackData, prefix="trainer"):
     action: str
+
 
 def clients_list_kb(clients: list) -> InlineKeyboardMarkup:
     """Генерує інлайн клавіатуру зі списком клієнтів тренера."""
@@ -21,6 +24,7 @@ def clients_list_kb(clients: list) -> InlineKeyboardMarkup:
     builder.adjust(1)
     return builder.as_markup()
 
+
 def client_profile_kb(client_id: int) -> InlineKeyboardMarkup:
     """Клавіатура для керування конкретним клієнтом з панелі тренера."""
     builder = InlineKeyboardBuilder()
@@ -32,6 +36,5 @@ def client_profile_kb(client_id: int) -> InlineKeyboardMarkup:
     builder.button(text="📅 Календар", callback_data=ClientAction(action="calendar", client_id=client_id).pack())
     builder.button(text="⚙️ Налаштування", callback_data=ClientAction(action="settings", client_id=client_id).pack())
     
-    # 2 кнопки в ряд для компактності
     builder.adjust(2)
     return builder.as_markup()

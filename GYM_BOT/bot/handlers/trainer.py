@@ -1,14 +1,16 @@
+import asyncio
 import logging
 from aiogram import Router, F, types
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
+from aiogram.types import Message, CallbackQuery
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.filters.role_filter import IsTrainer
 from database.models import User
 from bot.keyboards.trainer import (
-    TrainerClientCB, 
-    clients_list_keyboard, 
+    TrainerClientCB,
+    clients_list_keyboard,
     client_card_keyboard,
     client_edit_keyboard,
     cancel_edit_keyboard
@@ -20,95 +22,131 @@ trainer_router = Router()
 trainer_router.message.filter(IsTrainer())
 trainer_router.callback_query.filter(IsTrainer())
 
+
 # FSM для редагування параметрів клієнта
 class TrainerEditFSM(StatesGroup):
     waiting_for_value = State()
 
+
 # ==========================================
 # ГОЛОВНЕ МЕНЮ ТА СПИСОК КЛІЄНТІВ
 # ==========================================
+
 @trainer_router.message(F.text == "👥 Клієнти")
-async def cmd_clients(message: types.Message, session: AsyncSession, user_db: User):
-    clients_data, total_pages = await client_service.get_trainer_clients(session, user_db.id, page=1)
-    
-    if not clients_data:
-        await message.answer("У вас поки немає прикріплених клієнтів.")
-        return
+async def cmd_clients(message: Message, session: AsyncSession, user_db: User):
+    """Показати список клієнтів тренера."""
+    try:
+        clients_data, total_pages = await client_service.get_trainer_clients(session, user_db.id, page=1)
         
-    await message.answer(
-        "👥 <b>Ваші клієнти:</b>\n<i>Оберіть клієнта для перегляду деталей:</i>",
-        reply_markup=clients_list_keyboard(clients_data, page=1, total_pages=total_pages)
-    )
+        if not clients_data:
+            await message.answer("У вас поки немає прикріплених клієнтів.")
+            return
+        
+        await message.answer(
+            "👥 <b>Ваші клієнти:</b>\n<i>Оберіть клієнта для перегляду деталей:</i>",
+            reply_markup=clients_list_keyboard(clients_data, page=1, total_pages=total_pages)
+        )
+    except Exception as e:
+        logger.error(f"Error getting clients: {e}")
+        await message.answer("❌ Помилка завантаження списку клієнтів.")
+
 
 @trainer_router.callback_query(TrainerClientCB.filter(F.action == "list"))
-async def cb_clients_list(callback: types.CallbackQuery, callback_data: TrainerClientCB, session: AsyncSession, user_db: User):
-    page = callback_data.page
-    clients_data, total_pages = await client_service.get_trainer_clients(session, user_db.id, page=page)
-    
-    await callback.message.edit_text(
-        f"👥 <b>Ваші клієнти (Сторінка {page}/{total_pages}):</b>",
-        reply_markup=clients_list_keyboard(clients_data, page=page, total_pages=total_pages)
-    )
+async def cb_clients_list(callback: CallbackQuery, callback_data: TrainerClientCB, session: AsyncSession, user_db: User):
+    """Пагінація списку клієнтів."""
+    try:
+        page = callback_data.page
+        clients_data, total_pages = await client_service.get_trainer_clients(session, user_db.id, page=page)
+        
+        await callback.message.edit_text(
+            f"👥 <b>Ваші клієнти (Сторінка {page}/{total_pages}):</b>",
+            reply_markup=clients_list_keyboard(clients_data, page=page, total_pages=total_pages)
+        )
+    except Exception as e:
+        logger.error(f"Error pagination: {e}")
+        await callback.answer("❌ Помилка.", show_alert=True)
     await callback.answer()
+
 
 # ==========================================
 # КАРТКА КЛІЄНТА ТА ІНФО
 # ==========================================
+
 @trainer_router.callback_query(TrainerClientCB.filter(F.action == "card"))
-async def cb_client_card(callback: types.CallbackQuery, callback_data: TrainerClientCB, session: AsyncSession, state: FSMContext):
+async def cb_client_card(callback: CallbackQuery, callback_data: TrainerClientCB, session: AsyncSession, state: FSMContext):
+    """Показати картку клієнта."""
     await state.clear()
-    client_data = await client_service.get_client_by_id(session, callback_data.client_id)
-    if not client_data:
-        return await callback.answer("Клієнта не знайдено.", show_alert=True)
+    try:
+        client_data = await client_service.get_client_by_id(session, callback_data.client_id)
+        if not client_data:
+            return await callback.answer("Клієнта не знайдено.", show_alert=True)
         
-    user, profile = client_data
-    
-    text = (
-        f"👤 <b>Картка клієнта: {user.full_name}</b>\n\n"
-        f"⚖️ Вага: <b>{profile.current_weight or 'Не вказано'} кг</b>\n"
-        f"🎯 Ціль: <b>{profile.goal or 'Не вказано'}</b>\n"
-        f"📅 Старт: <b>{profile.start_date.strftime('%d.%m.%Y')}</b>\n"
-        f"🟢 Статус: <b>{'Активний' if profile.is_active else 'Неактивний'}</b>\n\n"
-        f"<i>Оберіть дію:</i>"
-    )
-    
-    await callback.message.edit_text(text, reply_markup=client_card_keyboard(user.id))
+        user, profile = client_data
+        
+        text = (
+            f"👤 <b>Картка клієнта: {user.full_name}</b>\n\n"
+            f"⚖️ Вага: <b>{profile.current_weight or 'Не вказано'} кг</b>\n"
+            f"🎯 Ціль: <b>{profile.goal or 'Не вказано'}</b>\n"
+            f"📅 Старт: <b>{profile.start_date.strftime('%d.%m.%Y')}</b>\n"
+            f"🟢 Статус: <b>{'Активний' if profile.is_active else 'Неактивний'}</b>\n\n"
+            f"<i>Оберіть дію:</i>"
+        )
+        
+        await callback.message.edit_text(text, reply_markup=client_card_keyboard(user.id))
+    except Exception as e:
+        logger.error(f"Error getting client card: {e}")
+        await callback.answer("❌ Помилка.", show_alert=True)
     await callback.answer()
 
+
 @trainer_router.callback_query(TrainerClientCB.filter(F.action == "info"))
-async def cb_client_info(callback: types.CallbackQuery, callback_data: TrainerClientCB, session: AsyncSession):
-    client_data = await client_service.get_client_by_id(session, callback_data.client_id)
-    if not client_data:
-        return await callback.answer("Помилка даних клієнта.", show_alert=True)
+async def cb_client_info(callback: CallbackQuery, callback_data: TrainerClientCB, session: AsyncSession):
+    """Показати детальну інформацію про клієнта."""
+    try:
+        client_data = await client_service.get_client_by_id(session, callback_data.client_id)
+        if not client_data:
+            return await callback.answer("Помилка даних клієнта.", show_alert=True)
         
-    user, profile = client_data
-    
-    text = (
-        f"📊 <b>Детальна інформація | {user.full_name}</b>\n\n"
-        f"Вік: <b>{profile.age or '?'}</b>\n"
-        f"Стать: <b>{profile.gender or '?'}</b>\n"
-        f"Ріст: <b>{profile.height or '?'} см</b>\n"
-        f"Стартова вага: <b>{profile.start_weight or '?'} кг</b>\n"
-        f"Поточна вага: <b>{profile.current_weight or '?'} кг</b>\n"
-        f"Ціль: <b>{profile.goal or '?'}</b>\n"
-        f"Рівень: <b>{profile.level or '?'}</b>\n"
-        f"Дата початку: <b>{profile.start_date.strftime('%d.%m.%Y')}</b>\n"
-        f"Наступний чекін: <b>{profile.next_checkin.strftime('%d.%m.%Y') if profile.next_checkin else 'Не задано'}</b>\n\n"
-        f"📝 Нотатки:\n<i>{profile.notes or 'Немає нотаток.'}</i>"
-    )
-    
-    await callback.message.edit_text(text, reply_markup=client_edit_keyboard(user.id))
+        user, profile = client_data
+        
+        text = (
+            f"📊 <b>Детальна інформація | {user.full_name}</b>\n\n"
+            f"Вік: <b>{profile.age or '?'}</b>\n"
+            f"Стать: <b>{profile.gender or '?'}</b>\n"
+            f"Ріст: <b>{profile.height or '?'} см</b>\n"
+            f"Стартова вага: <b>{profile.start_weight or '?'} кг</b>\n"
+            f"Поточна вага: <b>{profile.current_weight or '?'} кг</b>\n"
+            f"Ціль: <b>{profile.goal or '?'}</b>\n"
+            f"Рівень: <b>{profile.level or '?'}</b>\n"
+            f"Дата початку: <b>{profile.start_date.strftime('%d.%m.%Y')}</b>\n"
+            f"Наступний чекін: <b>{profile.next_checkin.strftime('%d.%m.%Y') if profile.next_checkin else 'Не задано'}</b>\n\n"
+            f"📝 Нотатки:\n<i>{profile.notes or 'Немає нотаток.'}</i>"
+        )
+        
+        await callback.message.edit_text(text, reply_markup=client_edit_keyboard(user.id))
+    except Exception as e:
+        logger.error(f"Error getting client info: {e}")
+        await callback.answer("❌ Помилка.", show_alert=True)
     await callback.answer()
+
 
 # ==========================================
 # РЕДАГУВАННЯ КЛІЄНТА
 # ==========================================
+
 @trainer_router.callback_query(TrainerClientCB.filter(F.action == "edit_field"))
-async def cb_edit_field(callback: types.CallbackQuery, callback_data: TrainerClientCB, state: FSMContext):
+async def cb_edit_field(callback: CallbackQuery, callback_data: TrainerClientCB, state: FSMContext):
+    """Початок редагування поля клієнта."""
     field_map_ru = {
-        "name": "Ім'я", "age": "Вік", "gender": "Стать", "height": "Ріст (см)",
-        "start_weight": "Стартову вагу (кг)", "current_weight": "Поточну вагу (кг)",
-        "goal": "Ціль", "level": "Рівень", "next_checkin": "Дату наступного чекіну (ДД.ММ.РРРР)",
+        "name": "Ім'я",
+        "age": "Вік",
+        "gender": "Стать",
+        "height": "Ріст (см)",
+        "start_weight": "Стартову вагу (кг)",
+        "current_weight": "Поточну вагу (кг)",
+        "goal": "Ціль",
+        "level": "Рівень",
+        "next_checkin": "Дату наступного чекіну (ДД.ММ.РРРР)",
         "notes": "Нотатки"
     }
     field_name = field_map_ru.get(callback_data.field, callback_data.field)
@@ -122,8 +160,10 @@ async def cb_edit_field(callback: types.CallbackQuery, callback_data: TrainerCli
     )
     await callback.answer()
 
+
 @trainer_router.message(TrainerEditFSM.waiting_for_value)
-async def process_edit_value(message: types.Message, state: FSMContext, session: AsyncSession, user_db: User):
+async def process_edit_value(message: Message, state: FSMContext, session: AsyncSession, user_db: User):
+    """Обробка введеного значення для редагування."""
     data = await state.get_data()
     client_id = data["client_id"]
     field = data["field"]
@@ -132,12 +172,11 @@ async def process_edit_value(message: types.Message, state: FSMContext, session:
     try:
         old_val, new_val_saved = await client_service.update_client_profile(session, client_id, field, new_value)
         
-        # Запис в AuditLog
         await audit_service.log_action(
-            session, 
-            actor_id=user_db.id, 
-            target_user_id=client_id, 
-            action="update_profile", 
+            session,
+            actor_id=user_db.id,
+            target_user_id=client_id,
+            action="update_profile",
             details={"field": field, "old": old_val, "new": str(new_val_saved)}
         )
         
@@ -149,19 +188,23 @@ async def process_edit_value(message: types.Message, state: FSMContext, session:
         logger.error(f"Error updating client {client_id}: {e}")
         await message.answer("❌ Виникла системна помилка при збереженні.")
         return
-        
+    
     await state.clear()
     
-    # Повертаємо тренера назад до інфо-картки клієнта
-    client_data = await client_service.get_client_by_id(session, client_id)
-    if client_data:
-        await message.answer("Повернення до картки...", reply_markup=client_card_keyboard(client_id))
+    # Повертаємо тренера до картки клієнта
+    await message.answer(
+        "🔙 Повернення до картки...",
+        reply_markup=client_card_keyboard(client_id)
+    )
+
 
 # ==========================================
 # ВИДАЛЕННЯ КЛІЄНТА
 # ==========================================
+
 @trainer_router.callback_query(TrainerClientCB.filter(F.action == "delete"))
-async def cb_delete_client(callback: types.CallbackQuery, callback_data: TrainerClientCB, session: AsyncSession, user_db: User):
+async def cb_delete_client(callback: CallbackQuery, callback_data: TrainerClientCB, session: AsyncSession, user_db: User):
+    """Відкріплення клієнта від тренера."""
     client_id = callback_data.client_id
     success = await client_service.delete_client(session, user_db.id, client_id)
     
@@ -170,8 +213,10 @@ async def cb_delete_client(callback: types.CallbackQuery, callback_data: Trainer
         await callback.message.edit_text("🗑 Клієнта успішно відкріплено від вас.")
     else:
         await callback.message.edit_text("❌ Помилка відкріплення. Клієнта не знайдено.")
-        
+    
     await asyncio.sleep(2)
+    
+    # Оновлюємо список
     clients_data, total_pages = await client_service.get_trainer_clients(session, user_db.id, page=1)
     await callback.message.answer(
         "👥 <b>Ваші клієнти:</b>",
@@ -179,22 +224,29 @@ async def cb_delete_client(callback: types.CallbackQuery, callback_data: Trainer
     )
     await callback.answer()
 
+
 # ==========================================
 # СТАТИСТИКА ТРЕНЕРА
 # ==========================================
+
 @trainer_router.message(F.text == "📊 Статистика")
-async def cmd_statistics(message: types.Message, session: AsyncSession, user_db: User):
-    stats = await client_service.get_trainer_statistics(session, user_db.id)
-    
-    text = (
-        f"📊 <b>Ваша статистика як тренера:</b>\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"👥 Всього клієнтів: <b>{stats['total']}</b>\n"
-        f"🟢 Активних: <b>{stats['active']}</b>\n"
-        f"🆕 Нових за місяць: <b>{stats['new_month']}</b>\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"⚖️ Середня вага клієнтів: <b>{stats['avg_weight']:.1f} кг</b>\n"
-        f"📉 Середня втрата ваги: <b>{stats['avg_change']:.1f} кг</b>\n"
-    )
-    
-    await message.answer(text)
+async def cmd_statistics(message: Message, session: AsyncSession, user_db: User):
+    """Показати статистику тренера."""
+    try:
+        stats = await client_service.get_trainer_statistics(session, user_db.id)
+        
+        text = (
+            f"📊 <b>Ваша статистика як тренера:</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"👥 Всього клієнтів: <b>{stats['total']}</b>\n"
+            f"🟢 Активних: <b>{stats['active']}</b>\n"
+            f"🆕 Нових за місяць: <b>{stats['new_month']}</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"⚖️ Середня вага клієнтів: <b>{stats['avg_weight']:.1f} кг</b>\n"
+            f"📉 Середня втрата ваги: <b>{stats['avg_change']:.1f} кг</b>\n"
+        )
+        
+        await message.answer(text)
+    except Exception as e:
+        logger.error(f"Error getting stats: {e}")
+        await message.answer("❌ Помилка завантаження статистики.")

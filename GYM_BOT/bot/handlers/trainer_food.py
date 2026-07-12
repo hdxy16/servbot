@@ -1,6 +1,8 @@
 import logging
+import datetime
 from aiogram import Router, F, types
 from aiogram.fsm.context import FSMContext
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.filters.role_filter import IsTrainer
@@ -16,8 +18,24 @@ trainer_food_router.callback_query.filter(IsTrainer())
 
 from bot.states.food_fsm import TrainerNutritionFSM
 
+
+async def render_draft(message: Message, client_id: int, draft: dict):
+    """Відображає чернетку плану харчування."""
+    text = (
+        f"✏️ <b>Редагування плану харчування:</b>\n\n"
+        f"🥩 Білок: {draft['protein']}\n"
+        f"🍚 Вуглеводи: {draft['carbs']}\n"
+        f"🥜 Жири: {draft['fats']}\n"
+        f"🍎 Фрукти: {draft['fruits']}\n"
+        f"🍩 Будь-що: {draft['anything']}\n"
+        f"🥗 Овочі: {draft['vegetables_g']} г\n\n"
+        f"<i>Оберіть макронутрієнт для зміни, потім натисніть 'Зберегти план'.</i>"
+    )
+    await message.edit_text(text, reply_markup=edit_nutrition_kb(client_id))
+
+
 @trainer_food_router.callback_query(TrainerClientCB.filter(F.action == "food"))
-async def cb_client_food_card(callback: types.CallbackQuery, callback_data: TrainerClientCB, session: AsyncSession):
+async def cb_client_food_card(callback: CallbackQuery, callback_data: TrainerClientCB, session: AsyncSession):
     client_id = callback_data.client_id
     plan = await nutrition_service.get_active_plan(session, client_id)
     
@@ -34,16 +52,16 @@ async def cb_client_food_card(callback: types.CallbackQuery, callback_data: Trai
             f"🥗 Овочі: <b>{plan.vegetables_g} г</b>\n\n"
             f"<i>План діє з {plan.created_at.strftime('%d.%m.%Y')}</i>"
         )
-        
+    
     await callback.message.edit_text(text, reply_markup=trainer_nutrition_kb(client_id))
     await callback.answer()
 
+
 @trainer_food_router.callback_query(TrainerNutrCB.filter(F.action == "edit_menu"))
-async def cb_edit_nutr_menu(callback: types.CallbackQuery, callback_data: TrainerNutrCB, state: FSMContext, session: AsyncSession):
+async def cb_edit_nutr_menu(callback: CallbackQuery, callback_data: TrainerNutrCB, state: FSMContext, session: AsyncSession):
     client_id = callback_data.client_id
     plan = await nutrition_service.get_active_plan(session, client_id)
     
-    # Створюємо чернетку в FSM
     draft = {
         "protein": plan.protein_portions if plan else 0.0,
         "carbs": plan.carbs_portions if plan else 0.0,
@@ -57,21 +75,9 @@ async def cb_edit_nutr_menu(callback: types.CallbackQuery, callback_data: Traine
     await render_draft(callback.message, client_id, draft)
     await callback.answer()
 
-async def render_draft(message: types.Message, client_id: int, draft: dict):
-    text = (
-        f"✏️ <b>Редагування плану харчування:</b>\n\n"
-        f"🥩 Білок: {draft['protein']}\n"
-        f"🍚 Вуглеводи: {draft['carbs']}\n"
-        f"🥜 Жири: {draft['fats']}\n"
-        f"🍎 Фрукти: {draft['fruits']}\n"
-        f"🍩 Будь-що: {draft['anything']}\n"
-        f"🥗 Овочі: {draft['vegetables_g']} г\n\n"
-        f"<i>Оберіть макронутрієнт для зміни, потім натисніть 'Зберегти план'.</i>"
-    )
-    await message.edit_text(text, reply_markup=edit_nutrition_kb(client_id))
 
 @trainer_food_router.callback_query(TrainerNutrCB.filter(F.action == "edit_val"))
-async def cb_edit_nutr_val(callback: types.CallbackQuery, callback_data: TrainerNutrCB, state: FSMContext):
+async def cb_edit_nutr_val(callback: CallbackQuery, callback_data: TrainerNutrCB, state: FSMContext):
     await state.set_state(TrainerNutritionFSM.waiting_for_value)
     await state.update_data(field=callback_data.field)
     await callback.message.edit_text(
@@ -80,8 +86,9 @@ async def cb_edit_nutr_val(callback: types.CallbackQuery, callback_data: Trainer
     )
     await callback.answer()
 
+
 @trainer_food_router.message(TrainerNutritionFSM.waiting_for_value)
-async def process_nutr_val(message: types.Message, state: FSMContext):
+async def process_nutr_val(message: Message, state: FSMContext):
     val_str = message.text.strip().replace(",", ".")
     try:
         val = float(val_str) if "." in val_str else int(val_str)
@@ -91,38 +98,45 @@ async def process_nutr_val(message: types.Message, state: FSMContext):
         draft[field] = val
         
         await state.update_data(draft=draft)
-        await state.set_state(None)
+        await state.clear()
         
         await message.answer("Значення оновлено. Повертаємось до чернетки...")
-        # У реальному боті краще видаляти повідомлення юзера і редагувати старе, 
-        # але для стабільності надішлемо нове.
         await render_draft(message, data["client_id"], draft)
     except ValueError:
         await message.answer("❌ Введіть коректне число.")
 
+
 @trainer_food_router.callback_query(TrainerNutrCB.filter(F.action == "save_plan"))
-async def cb_save_nutr_plan(callback: types.CallbackQuery, callback_data: TrainerNutrCB, state: FSMContext, session: AsyncSession, user_db: User):
+async def cb_save_nutr_plan(callback: CallbackQuery, callback_data: TrainerNutrCB, state: FSMContext, session: AsyncSession, user_db: User):
     data = await state.get_data()
     draft = data.get("draft")
     client_id = callback_data.client_id
     
     if not draft:
         return await callback.answer("Помилка чернетки.", show_alert=True)
+    
+    try:
+        new_plan = await nutrition_service.create_plan(
+            session, client_id, user_db.id,
+            draft["protein"], draft["carbs"], draft["fats"],
+            draft["fruits"], draft["anything"], int(draft["vegetables_g"])
+        )
         
-    new_plan = await nutrition_service.create_plan(
-        session, client_id, user_db.id,
-        draft["protein"], draft["carbs"], draft["fats"], 
-        draft["fruits"], draft["anything"], int(draft["vegetables_g"])
-    )
-    
-    await audit_service.log_action(session, user_db.id, client_id, "updated_nutrition_plan", details=draft)
-    await state.clear()
-    
-    await callback.message.edit_text("✅ Новий план харчування успішно застосовано!", reply_markup=trainer_nutrition_kb(client_id))
+        await audit_service.log_action(session, user_db.id, client_id, "updated_nutrition_plan", details=draft)
+        await state.clear()
+        
+        await callback.message.edit_text(
+            "✅ Новий план харчування успішно застосовано!",
+            reply_markup=trainer_nutrition_kb(client_id)
+        )
+    except Exception as e:
+        logger.error(f"Error saving nutrition plan: {e}")
+        await callback.answer("❌ Помилка збереження плану.", show_alert=True)
     await callback.answer()
 
+
 @trainer_food_router.callback_query(TrainerNutrCB.filter(F.action == "diary"))
-async def cb_diary(callback: types.CallbackQuery, callback_data: TrainerNutrCB, session: AsyncSession):
+async def cb_diary(callback: CallbackQuery, callback_data: TrainerNutrCB, session: AsyncSession):
     client_id = callback_data.client_id
     today = datetime.date.today()
     entries = await food_service.get_day_entries(session, client_id, today)
@@ -132,8 +146,9 @@ async def cb_diary(callback: types.CallbackQuery, callback_data: TrainerNutrCB, 
             f"📖 <b>Щоденник за {today.strftime('%d.%m.%Y')}</b>\n\nКлієнт ще нічого не записав.",
             reply_markup=trainer_nutrition_kb(client_id)
         )
+        await callback.answer()
         return
-        
+    
     text = f"📖 <b>Щоденник за {today.strftime('%d.%m.%Y')}</b>\n\n"
     for e in entries:
         time_str = e.created_at.strftime("%H:%M")
@@ -141,6 +156,6 @@ async def cb_diary(callback: types.CallbackQuery, callback_data: TrainerNutrCB, 
             text += f"▫️ {time_str} | {e.product_name} ({e.amount} г)\n"
         else:
             text += f"▫️ {time_str} | {e.product_name} ({e.portions:.1f} порц.)\n"
-            
+    
     await callback.message.edit_text(text, reply_markup=trainer_nutrition_kb(client_id))
     await callback.answer()

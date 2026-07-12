@@ -3,7 +3,7 @@ from sqlalchemy import select, func
 
 from database.models import (
     User,
-    MeasurementLog,
+    Measurement,
     WorkoutSession,
     FoodDay
 )
@@ -12,89 +12,66 @@ import datetime
 
 
 async def get_client_full_analytics(
-        session: AsyncSession,
-        client_id:int
+    session: AsyncSession,
+    client_id: int
 ):
+    """Отримує повну аналітику по клієнту."""
+    try:
+        user = await session.get(User, client_id)
+        if not user:
+            return None
 
-    user = await session.get(User, client_id)
-
-
-    measurements = await session.execute(
-        select(MeasurementLog)
-        .where(
-            MeasurementLog.user_id == client_id
+        measurements = await session.execute(
+            select(Measurement)
+            .where(
+                Measurement.client_id == client_id
+            )
+            .order_by(
+                Measurement.date
+            )
         )
-        .order_by(
-            MeasurementLog.date
+        measurements = measurements.scalars().all()
+
+        start_weight = None
+        current_weight = None
+
+        if measurements:
+            start_weight = measurements[0].weight
+            current_weight = measurements[-1].weight
+
+        workouts = await session.execute(
+            select(func.count(WorkoutSession.id))
+            .where(
+                WorkoutSession.client_id == client_id
+            )
         )
-    )
+        workout_count = workouts.scalar() or 0
 
-    measurements = measurements.scalars().all()
-
-
-    start_weight = None
-    current_weight = None
-
-
-    if measurements:
-
-        start_weight = measurements[0].weight
-        current_weight = measurements[-1].weight
-
-
-    workouts = await session.execute(
-        select(func.count(WorkoutSession.id))
-        .where(
-            WorkoutSession.user_id == client_id
+        food = await session.execute(
+            select(func.count(FoodDay.id))
+            .where(
+                FoodDay.client_id == client_id
+            )
         )
-    )
+        food_days = food.scalar() or 0
 
-
-    workout_count = workouts.scalar() or 0
-
-
-
-    food = await session.execute(
-        select(func.count(FoodDay.id))
-        .where(
-            FoodDay.client_id == client_id
-        )
-    )
-
-
-    food_days = food.scalar() or 0
-
-
-
-    return {
-
-        "weight": {
-
-            "start_weight": start_weight,
-
-            "current_weight": current_weight,
-
-            "diff_total":
-                (
-                    current_weight-start_weight
+        return {
+            "weight": {
+                "start_weight": start_weight,
+                "current_weight": current_weight,
+                "diff_total": (
+                    current_weight - start_weight
                     if start_weight and current_weight
                     else None
                 )
-
-        },
-
-
-        "workouts": {
-
-            "total_count": workout_count
-
-        },
-
-
-        "nutrition": {
-
-            "days_tracked": food_days
-
+            },
+            "workouts": {
+                "total_count": workout_count
+            },
+            "nutrition": {
+                "days_tracked": food_days
+            }
         }
-
-    }
+    except Exception as e:
+        await session.rollback()
+        raise e

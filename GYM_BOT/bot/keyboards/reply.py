@@ -1,6 +1,7 @@
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 from database.models import User
 
+
 def get_main_menu(user_db: User) -> ReplyKeyboardMarkup:
     """Генерує головне меню в залежності від поточної активної ролі користувача."""
     kb = []
@@ -24,9 +25,9 @@ def get_main_menu(user_db: User) -> ReplyKeyboardMarkup:
             [KeyboardButton(text="📈 Мій прогрес"), KeyboardButton(text="💬 Написати тренеру")],
             [KeyboardButton(text="📚 FAQ"), KeyboardButton(text="⚙️ Профіль")]
         ]
-        
+    
     # Якщо користувач має більше однієї ролі — даємо кнопку переключення
     if len(user_db.roles) > 1:
         kb.append([KeyboardButton(text="🔄 Переключити режим")])
-        
+    
     return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True, is_persistent=True)

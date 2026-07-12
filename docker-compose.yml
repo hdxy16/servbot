@@ -1,6 +1,7 @@
 version: '3.8'
 
 services:
+
   bot:
     build: .
     container_name: my_finance_bot
@@ -12,11 +13,13 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
 
+
   gym-bot:
     build: .
     container_name: my_gym_bot
     restart: unless-stopped
-    command: python Gym_Bot/main.py  # <-- ПОВЕРТАЄМО ЗВИЧАЙНИЙ ЗАПУСК
+    working_dir: /app/GYM_BOT
+    command: python main.py
     volumes:
       - .:/app
     environment:
