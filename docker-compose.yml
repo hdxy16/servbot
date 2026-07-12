@@ -6,7 +6,17 @@ services:
     container_name: my_finance_bot
     restart: unless-stopped
     ports:
-      - "8080:8080"  # <-- ПРОПИШИ ЦЕЙ РЯДОК, якщо його немає
+      - "8080:8080"
+    volumes:
+      - .:/app
+    environment:
+      - PYTHONUNBUFFERED=1
+
+  gym-bot:
+    build: .
+    container_name: my_gym_bot
+    restart: unless-stopped
+    command: python Gym_Bot/main.py  # <-- ПОВЕРТАЄМО ЗВИЧАЙНИЙ ЗАПУСК
     volumes:
       - .:/app
     environment:
